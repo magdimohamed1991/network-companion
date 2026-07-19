@@ -1,0 +1,33 @@
+# Database (contains private network data)
+*.db
+*.db-shm
+*.db-wal
+
+# Config file contains credentials (adguard password, telegram token, etc.)
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db

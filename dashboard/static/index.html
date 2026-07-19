@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Companion</title>
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#0A0E14">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  :root {
+    --bg: #0A0E14; --surface: #121821; --surface-raised: #171F2A;
+    --border: #212B38; --signal: #4FD8C4; --signal-glow: rgba(79,216,196,.35);
+    --signal-dim: #21504A; --amber: #E8A857; --coral: #E8646A;
+    --text: #EDEFF2; --text-dim: #8A93A3; --text-faint: #4C5768;
+    --radius: 12px; --font-display: 'IBM Plex Sans',-apple-system,sans-serif;
+    --font-mono: 'IBM Plex Mono','SF Mono',monospace;
+  }
+  * { box-sizing: border-box; }
+  @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--font-display); -webkit-font-smoothing:antialiased; min-height:100vh; }
+  a,button { font-family:inherit; }
+  button { background:none; border:none; color:inherit; cursor:pointer; font-size:inherit; }
+  button:focus-visible,input:focus-visible,[tabindex]:focus-visible { outline:2px solid var(--signal); outline-offset:2px; border-radius:4px; }
+  .mono { font-family:var(--font-mono); }
+
+  /* ---------- Login screen ---------- */
+  #loginScreen {
+    display:none; position:fixed; inset:0; background:var(--bg);
+    z-index:200; align-items:center; justify-content:center; flex-direction:column; gap:20px;
+  }
+  #loginScreen.visible { display:flex; }
+  .login-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:36px 40px; width:340px; }
+  .login-box h2 { font-size:17px; font-weight:700; margin:0 0 24px; }
+  .login-field { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
+  .login-field label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.06em; }
+  .login-field input { background:var(--surface-raised); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:8px 10px; font-family:var(--font-mono); font-size:13px; width:100%; }
+  .login-submit { width:100%; padding:9px; border-radius:7px; background:var(--signal-dim); color:var(--signal); border:1px solid var(--signal-dim); font-family:var(--font-mono); font-size:12px; margin-top:6px; transition:background .15s; }
+  .login-submit:hover { background:rgba(79,216,196,.15); }
+  .login-error { color:var(--coral); font-size:12px; margin-top:8px; min-height:16px; }
+
+  /* ---------- Header ---------- */
+  header { position:sticky; top:0; z-index:10; background:linear-gradient(180deg,var(--bg) 80%,transparent); padding:28px 32px 18px; border-bottom:1px solid var(--border); }
+  .header-row { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px; max-width:1200px; margin:0 auto; }
+  .brand { display:flex; align-items:baseline; gap:12px; }
+  .brand h1 { font-size:20px; font-weight:700; letter-spacing:.02em; margin:0; }
+  .brand .tick { color:var(--text-faint); font-size:12px; font-family:var(--font-mono); }
+  .header-right { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .user-badge { font-family:var(--font-mono); font-size:11px; color:var(--text-dim); padding:4px 8px; border:1px solid var(--border); border-radius:6px; }
+  .logout-btn { font-family:var(--font-mono); font-size:11px; color:var(--text-faint); padding:4px 8px; border:1px solid var(--border); border-radius:6px; }
+  .logout-btn:hover { color:var(--coral); border-color:var(--coral); }
+  .status-pills { display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { display:flex; align-items:center; gap:6px; font-size:11px; font-family:var(--font-mono); letter-spacing:.03em; padding:5px 10px; border-radius:999px; border:1px solid var(--border); color:var(--text-dim); background:var(--surface); }
+  .pill .led { width:6px; height:6px; border-radius:50%; background:var(--text-faint); flex-shrink:0; }
+  .pill.ok .led { background:var(--signal); box-shadow:0 0 6px var(--signal-glow); }
+  .pill.warn .led { background:var(--amber); }
+  .pill.bad .led { background:var(--coral); }
+  .pulse-strip { max-width:1200px; margin:18px auto 0; height:36px; position:relative; }
+  .pulse-strip svg { width:100%; height:100%; overflow:visible; }
+  .pulse-strip path { fill:none; stroke:var(--signal); stroke-width:1.5; opacity:.7; }
+  .emergency-btn { font-family:var(--font-mono); font-size:11px; color:var(--coral); border:1px solid var(--coral); background:rgba(232,100,106,.08); padding:6px 14px; border-radius:6px; letter-spacing:.03em; transition:background .15s; }
+  .emergency-btn:hover { background:rgba(232,100,106,.18); }
+  .policy-badge { font-family:var(--font-mono); font-size:10px; letter-spacing:.03em; padding:2px 7px; border-radius:4px; text-transform:uppercase; flex-shrink:0; }
+  .policy-badge.block { background:rgba(232,100,106,.15); color:var(--coral); }
+  .policy-badge.throttle { background:rgba(232,168,87,.15); color:var(--amber); }
+
+  /* ---------- Nav tabs ---------- */
+  .nav-tabs { max-width:1200px; margin:0 auto; padding:0 32px; display:flex; gap:4px; margin-top:14px; flex-wrap:wrap; }
+  .nav-tab { font-family:var(--font-mono); font-size:11px; padding:6px 14px; border-radius:6px; color:var(--text-dim); border:1px solid transparent; letter-spacing:.03em; transition:all .15s; }
+  .nav-tab:hover { color:var(--text); background:var(--surface); }
+  .nav-tab.active { color:var(--signal); border-color:var(--signal-dim); background:rgba(79,216,196,.06); }
+  @media(max-width:860px) { .nav-tabs { padding:0 16px; } header { padding:20px 16px 14px; } }
+</style>
+<style>
+  /* ---------- Layout ---------- */
+  .tab-panel { display:none; max-width:1200px; margin:0 auto; padding:28px 32px 80px; }
+  .tab-panel.active { display:block; }
+  .two-col { display:grid; grid-template-columns:1fr 300px; gap:28px; }
+  @media(max-width:860px) { .two-col { grid-template-columns:1fr; } .tab-panel { padding:20px 16px 60px; } }
+
+  /* ---------- Stats row ---------- */
+  .stats-row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:22px; }
+  @media(max-width:640px) { .stats-row { grid-template-columns:repeat(2,1fr); } }
+  .stat-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; }
+  .stat-card .num { font-family:var(--font-mono); font-size:22px; font-weight:600; color:var(--signal); }
+  .stat-card .label { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.06em; margin-top:4px; }
+
+  /* ---------- Section titles ---------- */
+  .section-title { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-faint); margin:4px 0 8px; }
+
+  /* ---------- Device cards ---------- */
+  section.devices { display:flex; flex-direction:column; gap:10px; }
+  .device { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; transition:border-color .2s; }
+  .device.offline { opacity:.6; }
+  .device-row { display:grid; grid-template-columns:auto 1fr auto auto; align-items:center; gap:16px; padding:14px 16px; cursor:pointer; }
+  @media(max-width:640px) { .device-row { grid-template-columns:auto 1fr; row-gap:10px; } .device-trace,.device-quota { grid-column:1/-1; } }
+  .led-dot { width:9px; height:9px; border-radius:50%; background:var(--text-faint); flex-shrink:0; position:relative; }
+  .device:not(.offline) .led-dot { background:var(--signal); }
+  .device:not(.offline) .led-dot::after { content:''; position:absolute; inset:-5px; border-radius:50%; border:1px solid var(--signal); animation:ping 2.2s ease-out infinite; }
+  @keyframes ping { 0% { transform:scale(.6); opacity:.8; } 100% { transform:scale(2.2); opacity:0; } }
+  .device-id .name-row { display:flex; align-items:center; gap:8px; }
+  .device-name { font-weight:600; font-size:14.5px; background:none; border:none; color:var(--text); padding:2px 4px; border-radius:4px; min-width:40px; }
+  .device-name:hover,.device-name:focus { background:var(--surface-raised); }
+  .device-meta { font-size:12px; color:var(--text-dim); margin-top:2px; }
+  .device-meta .mono { color:var(--text-faint); }
+  .device-tags { display:flex; gap:4px; margin-top:4px; flex-wrap:wrap; }
+  .tag { font-size:9px; background:var(--surface-raised); border:1px solid var(--border); padding:1px 5px; border-radius:4px; color:var(--text-faint); cursor:pointer; }
+  .tag.add-tag { border-style:dashed; }
+  .device-trace { width:130px; height:30px; }
+  .device-trace svg { width:100%; height:100%; }
+  .device-trace path { fill:none; stroke:var(--signal); stroke-width:1.5; }
+  .device-trace.untracked { display:flex; align-items:center; justify-content:center; }
+  .arm-btn { font-size:10px; font-family:var(--font-mono); color:var(--text-faint); border:1px dashed var(--border); padding:4px 8px; border-radius:6px; white-space:nowrap; }
+  .arm-btn:hover { color:var(--signal); border-color:var(--signal-dim); }
+  .device-quota { width:120px; text-align:right; }
+  .quota-bar { height:4px; border-radius:2px; background:var(--surface-raised); overflow:hidden; margin-top:5px; }
+  .quota-bar-fill { height:100%; background:var(--signal); border-radius:2px; transition:width .4s ease; }
+  .quota-bar-fill.warn { background:var(--amber); }
+  .quota-bar-fill.over { background:var(--coral); }
+  .quota-label { font-family:var(--font-mono); font-size:11px; color:var(--text-dim); }
+  .chevron { color:var(--text-faint); transition:transform .2s; font-size:12px; }
+  .device.expanded .chevron { transform:rotate(90deg); }
+  .device-detail { max-height:0; overflow:hidden; transition:max-height .25s ease; border-top:1px solid transparent; }
+  .device.expanded .device-detail { max-height:1200px; overflow-y:auto; border-top-color:var(--border); }
+  .device-detail-inner { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  @media(max-width:640px) { .device-detail-inner { grid-template-columns:1fr; } }
+  .access-control-block { padding:0 16px 16px; border-top:1px solid var(--border); margin-top:4px; padding-top:14px; }
+  .hidden-field { display:none!important; }
+  .new-rule-form { background:var(--surface-raised); border-radius:8px; padding:10px; }
+  .trend-chart { margin-top:6px; }
+  .blocked-count { font-family:var(--font-mono); font-size:11px; color:var(--coral); margin-bottom:6px; }
+  .detail-block h4 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-faint); margin:0 0 10px; }
+  .site-row { display:flex; justify-content:space-between; font-size:12.5px; padding:4px 0; border-bottom:1px solid var(--border); }
+  .site-row .domain { color:var(--text); font-family:var(--font-mono); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:210px; }
+  .site-row .count { color:var(--text-faint); font-family:var(--font-mono); font-size:11px; }
+  .empty-note { color:var(--text-faint); font-size:12px; font-style:italic; }
+  .control-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .control-row label { font-size:12px; color:var(--text-dim); flex-shrink:0; }
+  .control-row input[type=number] { background:var(--surface-raised); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:5px 8px; width:90px; font-family:var(--font-mono); font-size:12px; }
+  .toggle-btn { font-size:11px; font-family:var(--font-mono); padding:6px 12px; border-radius:6px; border:1px solid var(--border); color:var(--text-dim); }
+  .toggle-btn.armed { border-color:var(--signal-dim); color:var(--signal); }
+  .toggle-btn:hover { border-color:var(--signal); color:var(--signal); }
+  .save-btn { font-size:11px; font-family:var(--font-mono); color:var(--text-dim); border:1px solid var(--border); padding:5px 10px; border-radius:6px; }
+  .save-btn:hover { color:var(--signal); border-color:var(--signal-dim); }
+  .action-select { background:var(--surface-raised); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:5px 8px; font-family:var(--font-mono); font-size:12px; }
+  .dow-picker { display:flex; gap:4px; margin:6px 0; }
+  .dow-btn { width:26px; height:26px; border-radius:6px; border:1px solid var(--border); font-family:var(--font-mono); font-size:10px; color:var(--text-faint); }
+  .dow-btn.active { background:var(--signal-dim); color:var(--signal); border-color:var(--signal-dim); }
+  .time-row { display:flex; align-items:center; gap:6px; margin:6px 0; }
+  .time-row input[type=time] { background:var(--surface-raised); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:4px 6px; font-family:var(--font-mono); font-size:12px; }
+  .rule-row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--border); font-size:12px; }
+  .rule-row .rule-info { color:var(--text-dim); }
+  .rule-row .rule-info strong { color:var(--text); }
+  .rule-row .rule-actions { display:flex; gap:6px; }
+  .rule-row button { font-size:10px; font-family:var(--font-mono); color:var(--text-faint); border:1px solid var(--border); padding:3px 7px; border-radius:5px; }
+  .rule-row button:hover { color:var(--text); }
+  /* privacy score badge */
+  .privacy-score { display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:12px; }
+  .score-circle { width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:13px; }
+  .score-good { background:rgba(79,216,196,.15); color:var(--signal); border:1px solid var(--signal-dim); }
+  .score-mid { background:rgba(232,168,87,.12); color:var(--amber); border:1px solid rgba(232,168,87,.3); }
+  .score-bad { background:rgba(232,100,106,.12); color:var(--coral); border:1px solid rgba(232,100,106,.3); }
+</style>
+<style>
+  /* ---------- Sidebar ---------- */
+  aside { display:flex; flex-direction:column; gap:16px; }
+  .events-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; }
+  .event-row { display:flex; gap:8px; padding:7px 0; border-bottom:1px solid var(--border); font-size:12px; }
+  .event-row:last-child { border-bottom:none; }
+  .event-dot { width:6px; height:6px; border-radius:50%; margin-top:5px; flex-shrink:0; background:var(--text-faint); }
+  .event-dot.new_device { background:var(--signal); }
+  .event-dot.online { background:var(--signal); }
+  .event-dot.offline { background:var(--text-faint); }
+  .event-dot.offline_disarm { background:var(--text-faint); }
+  .event-dot.watchdog_disarm { background:var(--coral); }
+  .event-time { color:var(--text-faint); font-family:var(--font-mono); font-size:10.5px; }
+  .event-text { color:var(--text-dim); }
+  .empty-state { text-align:center; padding:60px 20px; color:var(--text-dim); }
+  .empty-state h3 { color:var(--text); font-size:15px; margin-bottom:6px; }
+  .empty-state p { font-size:13px; max-width:360px; margin:0 auto; line-height:1.6; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--surface-raised); border:1px solid var(--border); color:var(--text); padding:10px 18px; border-radius:8px; font-size:12.5px; opacity:0; transition:all .25s ease; pointer-events:none; z-index:100; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+  /* ---------- Topology ---------- */
+  #topoCanvas { width:100%; height:520px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+  .topo-legend { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; font-size:11px; color:var(--text-dim); }
+  .topo-legend span { display:flex; align-items:center; gap:5px; }
+  .topo-legend i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+
+  /* ---------- Speed test ---------- */
+  .speedtest-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px 24px; }
+  .speedtest-latest { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:20px; }
+  .speed-metric { text-align:center; }
+  .speed-metric .val { font-family:var(--font-mono); font-size:28px; font-weight:600; color:var(--signal); }
+  .speed-metric .unit { font-family:var(--font-mono); font-size:11px; color:var(--text-faint); }
+  .speed-metric .lbl { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.06em; margin-top:4px; }
+  .speed-metric.ping .val { color:var(--amber); }
+  .run-speedtest-btn { font-family:var(--font-mono); font-size:11px; color:var(--signal); border:1px solid var(--signal-dim); background:rgba(79,216,196,.06); padding:7px 16px; border-radius:7px; transition:background .15s; }
+  .run-speedtest-btn:hover { background:rgba(79,216,196,.14); }
+  .run-speedtest-btn:disabled { color:var(--text-faint); border-color:var(--border); background:none; cursor:not-allowed; }
+  .speedtest-history table { width:100%; border-collapse:collapse; font-size:12px; }
+  .speedtest-history th { text-align:left; color:var(--text-faint); font-weight:500; padding:4px 6px; border-bottom:1px solid var(--border); font-family:var(--font-mono); font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+  .speedtest-history td { padding:6px 6px; border-bottom:1px solid rgba(33,43,56,.5); color:var(--text-dim); font-family:var(--font-mono); font-size:11px; }
+  .speedtest-history td.hl { color:var(--text); }
+
+  /* ---------- DNS stream ---------- */
+  .dns-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; }
+  .dns-controls { display:flex; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+  .dns-toggle-btn { font-family:var(--font-mono); font-size:11px; padding:6px 12px; border-radius:6px; border:1px solid var(--border); color:var(--text-dim); transition:all .15s; }
+  .dns-toggle-btn.active { border-color:var(--signal-dim); color:var(--signal); background:rgba(79,216,196,.06); }
+  .dns-filter { background:var(--surface-raised); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:5px 8px; font-family:var(--font-mono); font-size:11px; flex:1; min-width:120px; }
+  .dns-stream-list { max-height:420px; overflow-y:auto; }
+  .dns-entry { display:flex; align-items:center; gap:10px; padding:5px 0; border-bottom:1px solid rgba(33,43,56,.5); font-size:12px; font-family:var(--font-mono); }
+  .dns-entry .dns-time { color:var(--text-faint); font-size:10px; flex-shrink:0; width:58px; }
+  .dns-entry .dns-client { color:var(--text-dim); flex-shrink:0; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dns-entry .dns-domain { color:var(--text); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dns-entry .dns-blocked { font-size:9px; color:var(--coral); border:1px solid rgba(232,100,106,.3); padding:1px 4px; border-radius:3px; flex-shrink:0; }
+
+  /* ---------- Auth / admin panel ---------- */
+  .admin-panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; max-width:600px; }
+  .admin-panel h3 { font-size:13px; font-weight:600; margin:0 0 16px; }
+  .user-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border); font-size:12px; }
+  .user-row .user-info { display:flex; align-items:center; gap:10px; }
+  .role-badge { font-family:var(--font-mono); font-size:9px; padding:2px 6px; border-radius:4px; }
+  .role-badge.admin { background:rgba(79,216,196,.12); color:var(--signal); }
+  .role-badge.viewer { background:rgba(138,147,163,.1); color:var(--text-faint); }
+  .user-actions { display:flex; gap:6px; }
+  .user-actions button { font-size:10px; font-family:var(--font-mono); color:var(--text-faint); border:1px solid var(--border); padding:3px 7px; border-radius:5px; }
+  .user-actions button:hover { color:var(--coral); border-color:var(--coral); }
+  .add-user-form { background:var(--surface-raised); border-radius:8px; padding:14px; margin-top:14px; display:grid; grid-template-columns:1fr 1fr auto; gap:8px; align-items:end; }
+  .add-user-form label { font-size:10px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.06em; }
+  .add-user-form input, .add-user-form select { background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:5px; padding:5px 7px; font-family:var(--font-mono); font-size:11px; width:100%; }
+</style>
+</head>
+<body>
+
+<!-- Login screen -->
+<div id="loginScreen">
+  <div class="login-box">
+    <h2>NETWORK COMPANION</h2>
+    <div class="login-field">
+      <label>Username</label>
+      <input type="text" id="loginUser" autocomplete="username" placeholder="admin">
+    </div>
+    <div class="login-field">
+      <label>Password</label>
+      <input type="password" id="loginPass" autocomplete="current-password" placeholder="••••••••"
+             onkeydown="if(event.key==='Enter') doLogin()">
+    </div>
+    <button class="login-submit" onclick="doLogin()">Sign in</button>
+    <div class="login-error" id="loginError"></div>
+  </div>
+</div>
+
+<header>
+  <div class="header-row">
+    <div class="brand">
+      <h1>NETWORK COMPANION</h1>
+      <span class="tick mono" id="clock">--:--:--</span>
+    </div>
+    <div class="header-right">
+      <div class="status-pills" id="statusPills">
+        <span class="pill"><span class="led"></span>connecting…</span>
+      </div>
+      <span class="user-badge" id="userBadge" style="display:none"></span>
+      <button class="logout-btn" id="logoutBtn" style="display:none" onclick="doLogout()">sign out</button>
+    </div>
+  </div>
+  <script>if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('/static/sw.js'));</script>
+  <div class="header-row" style="margin-top:10px">
+    <button class="emergency-btn" id="emergencyBtn" onclick="emergencyUnblock()">⏻ Emergency unblock everything</button>
+  </div>
+  <div class="pulse-strip"><svg id="aggregatePulse" preserveAspectRatio="none" viewBox="0 0 300 36"><path id="aggregatePath" d="M0,18 L300,18"/></svg></div>
+  <nav class="nav-tabs">
+    <button class="nav-tab active" onclick="switchTab('devices')" id="tab-devices">Devices</button>
+    <button class="nav-tab" onclick="switchTab('topology')" id="tab-topology">Topology</button>
+    <button class="nav-tab" onclick="switchTab('speedtest')" id="tab-speedtest">Speed Test</button>
+    <button class="nav-tab" onclick="switchTab('dns')" id="tab-dns">DNS Live</button>
+    <button class="nav-tab" id="tab-admin" onclick="switchTab('admin')" style="display:none">Admin</button>
+  </nav>
+</header>
+
+<!-- DEVICES TAB -->
+<div class="tab-panel active" id="panel-devices">
+  <div class="two-col">
+    <div>
+      <div class="stats-row">
+        <div class="stat-card"><div class="num" id="statOnline">–</div><div class="label">Online now</div></div>
+        <div class="stat-card"><div class="num" id="statTotal">–</div><div class="label">Known devices</div></div>
+        <div class="stat-card"><div class="num" id="statArmed">–</div><div class="label">Bandwidth-tracked</div></div>
+        <div class="stat-card"><div class="num" id="statUsage">–</div><div class="label">MB this month</div></div>
+        <div id="routerStatCard" class="stat-card" style="display:none;grid-column:span 4;">
+          <div class="num" id="statRouterUsage">–</div><div class="label">Total Router Traffic (WAN)</div>
+        </div>
+      </div>
+      <section class="devices">
+        <div class="section-title">Devices</div>
+        <div id="deviceList"></div>
+      </section>
+    </div>
+    <aside>
+      <div class="events-panel">
+        <div class="section-title" style="margin-top:0">Recent activity</div>
+        <div id="eventsList"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- TOPOLOGY TAB -->
+<div class="tab-panel" id="panel-topology">
+  <div class="section-title">Network Topology</div>
+  <div class="topo-legend">
+    <span><i style="background:#4FD8C4"></i> Router</span>
+    <span><i style="background:#E8A857"></i> This host</span>
+    <span><i style="background:#4FD8C4;opacity:.5"></i> Online device</span>
+    <span><i style="background:#4C5768"></i> Offline device</span>
+    <span><i style="background:#E8646A;opacity:.7;border-radius:2px"></i> Bandwidth-tracked</span>
+  </div>
+  <div id="topoCanvas"></div>
+  <div class="empty-note" style="margin-top:10px">Click and drag nodes to rearrange. Scroll to zoom.</div>
+</div>
+
+<!-- SPEED TEST TAB -->
+<div class="tab-panel" id="panel-speedtest">
+  <div class="speedtest-panel">
+    <div class="section-title" style="margin-top:0">Speed Test</div>
+    <div class="speedtest-latest" id="speedtestLatest">
+      <div class="speed-metric"><div class="val" id="stDown">–</div><div class="unit">Mbps</div><div class="lbl">Download</div></div>
+      <div class="speed-metric"><div class="val" id="stUp">–</div><div class="unit">Mbps</div><div class="lbl">Upload</div></div>
+      <div class="speed-metric ping"><div class="val" id="stPing">–</div><div class="unit">ms</div><div class="lbl">Ping</div></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap;">
+      <button class="run-speedtest-btn" id="runSpeedtestBtn" onclick="runSpeedtest()">▶ Run speed test</button>
+      <span id="stISP" style="font-size:11px;color:var(--text-faint);font-family:var(--font-mono)"></span>
+      <span id="stRunning" style="font-size:11px;color:var(--amber);font-family:var(--font-mono);display:none">⏳ Running…</span>
+    </div>
+    <div class="section-title">History</div>
+    <div class="speedtest-history" id="speedtestHistory"></div>
+  </div>
+</div>
+
+<!-- DNS LIVE TAB -->
+<div class="tab-panel" id="panel-dns">
+  <div class="dns-panel">
+    <div class="section-title" style="margin-top:0">Live DNS Query Stream</div>
+    <div class="dns-controls">
+      <button class="dns-toggle-btn active" id="dnsStreamBtn" onclick="toggleDnsStream()">⏸ Pause</button>
+      <input class="dns-filter" id="dnsFilter" type="text" placeholder="Filter by domain or device…">
+      <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:5px;">
+        <input type="checkbox" id="dnsBlockedOnly"> Blocked only
+      </label>
+      <button class="save-btn" onclick="clearDnsList()">Clear</button>
+    </div>
+    <div class="dns-stream-list" id="dnsStreamList">
+      <div class="empty-note">Connecting to DNS stream…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN TAB -->
+<div class="tab-panel" id="panel-admin">
+  <div class="admin-panel">
+    <h3>User Management</h3>
+    <div id="userList"></div>
+    <div class="add-user-form">
+      <div><label>Username</label><input type="text" id="newUserName" placeholder="jane"></div>
+      <div><label>Password</label><input type="password" id="newUserPass" placeholder="••••••••"></div>
+      <div><label>Role</label><select id="newUserRole"><option value="viewer">Viewer</option><option value="admin">Admin</option></select></div>
+      <button class="save-btn" onclick="createUser()" style="align-self:end">+ Add user</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================
+// AUTH
+// ============================================================
+const POLL_DEVICES_MS = 5000, POLL_STATUS_MS = 8000, POLL_EVENTS_MS = 10000;
+let deviceCache = {}, expandedMac = null, currentRole = 'viewer', authToken = '';
+
+function getToken() { return authToken || localStorage.getItem('nc_token') || ''; }
+function getRole()  { return currentRole || localStorage.getItem('nc_role') || 'viewer'; }
+
+function authHeaders() {
+  const t = getToken();
+  return t ? { 'Authorization': `Bearer ${t}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+}
+
+async function api(path, opts = {}) {
+  if (!opts.headers) opts.headers = {};
+  Object.assign(opts.headers, authHeaders());
+  if (opts.body && typeof opts.body === 'object') opts.body = JSON.stringify(opts.body);
+  const res = await fetch(path, opts);
+  if (res.status === 401 || res.status === 403) { showLogin(); return null; }
+  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+  return res.json();
+}
+
+async function doLogin() {
+  const user = document.getElementById('loginUser').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  document.getElementById('loginError').textContent = '';
+  try {
+    const form = new URLSearchParams({ username: user, password: pass });
+    const res = await fetch('/api/auth/login', { method: 'POST', body: form });
+    if (!res.ok) { document.getElementById('loginError').textContent = 'Invalid credentials'; return; }
+    const data = await res.json();
+    authToken = data.access_token || '';
+    currentRole = data.role || 'viewer';
+    localStorage.setItem('nc_token', authToken);
+    localStorage.setItem('nc_role', currentRole);
+    hideLogin();
+    applyRole(currentRole);
+    startAll();
+  } catch(e) { document.getElementById('loginError').textContent = 'Login failed'; }
+}
+
+function doLogout() {
+  authToken = ''; currentRole = 'viewer';
+  localStorage.removeItem('nc_token'); localStorage.removeItem('nc_role');
+  showLogin();
+}
+
+function showLogin() { document.getElementById('loginScreen').classList.add('visible'); }
+function hideLogin() { document.getElementById('loginScreen').classList.remove('visible'); }
+
+function applyRole(role) {
+  currentRole = role;
+  const isAdmin = role === 'admin';
+  document.getElementById('emergencyBtn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('tab-admin').style.display = isAdmin ? '' : 'none';
+  document.querySelectorAll('.admin-only').forEach(el => { el.style.display = isAdmin ? '' : 'none'; });
+  document.getElementById('userBadge').textContent = localStorage.getItem('nc_token') ? `${role}` : '';
+  document.getElementById('userBadge').style.display = '';
+  document.getElementById('logoutBtn').style.display = '';
+}
+
+async function checkAuth() {
+  const status = await fetch('/api/status', { headers: authHeaders() }).catch(() => null);
+  if (!status) return false;
+  if (status.status === 401 || status.status === 403) return false;
+  const data = await status.json();
+  if (data.auth_enabled && !getToken()) return false;
+  return true;
+}
+
+async function init() {
+  authToken = localStorage.getItem('nc_token') || '';
+  const ok = await checkAuth();
+  if (!ok) { showLogin(); return; }
+  try {
+    const me = await api('/api/auth/me');
+    if (me) { currentRole = me.role; localStorage.setItem('nc_role', me.role); applyRole(me.role); }
+  } catch(e) { applyRole('viewer'); }
+  startAll();
+}
+
+// ============================================================
+// TAB NAVIGATION
+// ============================================================
+const TABS = ['devices', 'topology', 'speedtest', 'dns', 'admin'];
+
+function switchTab(name) {
+  TABS.forEach(t => {
+    document.getElementById(`panel-${t}`).classList.toggle('active', t === name);
+    document.getElementById(`tab-${t}`)?.classList.toggle('active', t === name);
+  });
+  if (name === 'topology') renderTopology();
+  if (name === 'speedtest') loadSpeedtestData();
+  if (name === 'dns') ensureDnsStream();
+  if (name === 'admin') loadUsers();
+}
+
+// ============================================================
+// UTIL
+// ============================================================
+function fmtBytes(bytes) {
+  if (!bytes) return '0 MB';
+  const mb = bytes / (1024*1024);
+  if (mb < 1) return (bytes/1024).toFixed(0) + ' KB';
+  if (mb > 1024) return (mb/1024).toFixed(2) + ' GB';
+  return mb.toFixed(1) + ' MB';
+}
+
+function timeAgo(ts) {
+  if (!ts) return '—';
+  const s = Math.floor(Date.now()/1000 - ts);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+  catch(e) { return iso.slice(11, 19) || ''; }
+}
+
+function toast(msg) {
+  const el = document.getElementById('toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div'); d.textContent = str ?? ''; return d.innerHTML;
+}
+
+function sparklinePath(samples, key, width, height) {
+  if (!samples.length) return `M0,${height/2} L${width},${height/2}`;
+  const values = samples.map(s => s[key]);
+  const max = Math.max(...values, 1);
+  const step = width / Math.max(samples.length-1, 1);
+  return samples.map((s,i) => {
+    const x = i * step, y = height - (s[key]/max) * (height-4) - 2;
+    return `${i===0?'M':'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+}
+</script>
+
+<script>
+// ============================================================
+// STATUS / EVENTS
+// ============================================================
+async function refreshStatus() {
+  try {
+    const s = await api('/api/status'); if (!s) return;
+    const pills = document.getElementById('statusPills'); pills.innerHTML = '';
+    pills.appendChild(makePill(s.scanner_alive ? 'ok' : 'bad', s.scanner_alive ? 'scanner live' : 'scanner not running'));
+    if (s.snmp_alive !== undefined) pills.appendChild(makePill(s.snmp_alive ? 'ok' : 'warn', s.snmp_alive ? 'router snmp live' : 'router snmp inactive'));
+    if (s.adguard_configured) {
+      pills.appendChild(makePill(s.adguard_reachable ? 'ok' : 'bad', s.adguard_reachable ? 'AdGuard connected' : 'AdGuard unreachable'));
+      if (s.adguard_reachable) {
+        try {
+          const stats = await api('/api/adguard/stats');
+          if (stats) pills.appendChild(makePill('warn', `${stats.num_blocked_filtering??0}/${stats.num_dns_queries??0} blocked today`));
+        } catch(e) {}
+      }
+    } else pills.appendChild(makePill('warn', 'AdGuard not configured'));
+    pills.appendChild(makePill(s.armed_device_count > 0 ? 'ok' : 'warn', `${s.armed_device_count} armed`));
+    document.getElementById('statArmed').textContent = s.armed_device_count;
+
+    if (s.snmp_alive) {
+      const rData = await api('/api/router/bandwidth_trend'); if (!rData) return;
+      const latest = rData.days[rData.days.length-1];
+      if (latest) {
+        document.getElementById('routerStatCard').style.display = 'block';
+        document.getElementById('statRouterUsage').textContent = fmtBytes(latest.bytes_sent + latest.bytes_received);
+      }
+    }
+    // speedtest running indicator
+    document.getElementById('stRunning').style.display = s.speedtest_running ? '' : 'none';
+    document.getElementById('runSpeedtestBtn').disabled = s.speedtest_running || getRole() !== 'admin';
+  } catch(e) {}
+}
+
+function makePill(state, text) {
+  const span = document.createElement('span');
+  span.className = `pill ${state}`;
+  span.innerHTML = `<span class="led"></span>${text}`;
+  return span;
+}
+
+async function refreshEvents() {
+  try {
+    const { events } = await api('/api/events?limit=20') || { events: [] };
+    const list = document.getElementById('eventsList');
+    if (!events.length) { list.innerHTML = '<div class="empty-note">Nothing yet — waiting on the first scan.</div>'; return; }
+    list.innerHTML = events.map(e => {
+      const dev = deviceCache[e.mac];
+      const label = dev ? (dev.friendly_name || dev.hostname || dev.mac) : e.mac;
+      const verb = { new_device:'joined the network for the first time', online:'came online', offline:'went offline', offline_disarm:'stopped being bandwidth-tracked (went offline)', watchdog_disarm:'stopped being bandwidth-tracked (no traffic detected)' }[e.event_type] || e.event_type;
+      return `<div class="event-row"><span class="event-dot ${e.event_type}"></span><div><div class="event-text"><strong>${escapeHtml(label)}</strong> ${verb}</div><div class="event-time">${timeAgo(e.at)}</div></div></div>`;
+    }).join('');
+  } catch(e) {}
+}
+</script>
+
+<script>
+// ============================================================
+// DEVICES TAB
+// ============================================================
+async function refreshDevices() {
+  let data; try { data = await api('/api/devices'); if (!data) return; } catch(e) { return; }
+  const devices = data.devices;
+  deviceCache = Object.fromEntries(devices.map(d => [d.mac, d]));
+  document.getElementById('statOnline').textContent = devices.filter(d => d.is_online).length;
+  document.getElementById('statTotal').textContent = devices.length;
+  document.getElementById('statUsage').textContent = devices.reduce((s,d) => s + (d.usage_month_total_mb||0), 0).toFixed(0);
+  const container = document.getElementById('deviceList');
+  if (!devices.length) {
+    container.innerHTML = `<div class="empty-state"><h3>No devices seen yet</h3><p>Once scanner.py is running, devices will appear here automatically.</p></div>`;
+    return;
+  }
+  devices.sort((a,b) => (b.is_online - a.is_online) || (b.last_seen - a.last_seen));
+  container.innerHTML = devices.map(d => renderDevice(d)).join('');
+  devices.forEach(d => {
+    if (d.bandwidth_armed) loadTrace(d.mac);
+    if (expandedMac === d.mac) { loadSites(d.mac); loadBlocked(d.mac); loadScheduleRules(d.mac); if(d.bandwidth_armed) loadTrend(d.mac); loadPrivacyScore(d.mac); }
+  });
+}
+
+function renderDevice(d) {
+  const isExpanded = expandedMac === d.mac;
+  const quotaPct = d.monthly_quota_mb ? Math.min(100, (d.usage_month_total_mb / d.monthly_quota_mb) * 100) : null;
+  const quotaClass = quotaPct === null ? '' : quotaPct >= 100 ? 'over' : quotaPct >= 80 ? 'warn' : '';
+  const policy = d.effective_policy;
+  const isRestricted = policy && policy.action !== 'none';
+  const isAdmin = getRole() === 'admin';
+  return `
+  <div class="device ${d.is_online?'':'offline'} ${isExpanded?'expanded':''}" data-mac="${d.mac}">
+    <div class="device-row" onclick="toggleExpand('${d.mac}')">
+      <span class="led-dot"></span>
+      <div class="device-id">
+        <div class="name-row">
+          <input class="device-name mono" value="${escapeHtml(d.friendly_name||d.hostname||d.mac)}"
+                 ${isAdmin?'':'readonly'} onclick="event.stopPropagation()" onchange="renameDevice('${d.mac}',this.value)">
+          ${isRestricted ? `<span class="policy-badge ${policy.action}" title="${escapeHtml(policy.reason)}">${policy.action}</span>` : ''}
+        </div>
+        <div class="device-meta">${escapeHtml(d.vendor||'Unknown vendor')} · <span class="mono">${d.ip||'—'}</span> · <span class="mono">${d.mac}</span></div>
+        <div class="device-tags">
+          ${(d.tags||'').split(',').filter(t=>t).map(t=>`<span class="tag" onclick="event.stopPropagation();${isAdmin?`removeTag('${d.mac}','${t}')`:''}"">${escapeHtml(t)}</span>`).join('')}
+          ${isAdmin?`<span class="tag add-tag" onclick="event.stopPropagation();addTagPrompt('${d.mac}')">+ tag</span>`:''}
+        </div>
+      </div>
+      ${d.bandwidth_armed
+        ? `<div class="device-trace" id="trace-${d.mac}"><svg viewBox="0 0 130 30" preserveAspectRatio="none"><path d="M0,15 L130,15"/></svg></div>`
+        : `<div class="device-trace untracked">${isAdmin?`<button class="arm-btn" onclick="event.stopPropagation();armDevice('${d.mac}')">+ track bandwidth</button>`:'<span class="empty-note">untracked</span>'}</div>`
+      }
+      <div class="device-quota">
+        ${d.monthly_quota_mb
+          ? `<div class="quota-label">${fmtBytes(d.usage_month_total_mb*1024*1024)} / ${(d.monthly_quota_mb/1024).toFixed(1)} GB</div><div class="quota-bar"><div class="quota-bar-fill ${quotaClass}" style="width:${quotaPct}%"></div></div>`
+          : `<div class="quota-label">${fmtBytes(d.usage_month_total_mb*1024*1024)}</div>`}
+      </div>
+      <span class="chevron">▶</span>
+    </div>
+    <div class="device-detail">
+      <div class="device-detail-inner">
+        <div class="detail-block">
+          <h4>Sites visited (DNS)</h4>
+          <div id="sites-${d.mac}"><span class="empty-note">Expand to load…</span></div>
+          <h4 style="margin-top:16px">Blocked by AdGuard</h4>
+          <div id="blocked-${d.mac}"><span class="empty-note">Expand to load…</span></div>
+          <h4 style="margin-top:16px">Privacy Score <span id="pscore-${d.mac}"></span></h4>
+          <div id="pscore-detail-${d.mac}"></div>
+        </div>
+        <div class="detail-block">
+          <h4>Bandwidth tracking</h4>
+          ${isAdmin?`<div class="control-row">
+            <button class="toggle-btn ${d.bandwidth_armed?'armed':''}" onclick="event.stopPropagation();${d.bandwidth_armed?`disarmDevice('${d.mac}')`:`armDevice('${d.mac}')`}">
+              ${d.bandwidth_armed?'● tracking — click to stop':'○ not tracked — click to start'}
+            </button>
+          </div>${!d.bandwidth_armed?'<div class="empty-note">Requires arp_spoofer.py running as Administrator.</div>':''}`:
+          `<div class="empty-note">${d.bandwidth_armed?'● tracking':'○ not tracked'}</div>`}
+          ${isAdmin?`<h4 style="margin-top:16px">Monthly quota</h4>
+          <div class="control-row">
+            <label>Limit (GB)</label>
+            <input type="number" min="0" id="quota-${d.mac}" value="${d.monthly_quota_mb?d.monthly_quota_mb/1024:''}" placeholder="none">
+            <button class="save-btn" onclick="event.stopPropagation();saveQuota('${d.mac}')">Save</button>
+          </div>`:''}
+          <div class="empty-note">First seen ${timeAgo(d.first_seen)} · last seen ${timeAgo(d.last_seen)}</div>
+          ${d.bandwidth_armed?`<h4 style="margin-top:16px">Last 14 days</h4><div id="trend-${d.mac}" class="trend-chart"><span class="empty-note">Expand to load…</span></div>`:''}
+        </div>
+      </div>
+      ${isAdmin?`<div class="access-control-block">
+        <h4>Access control ${policy&&policy.reason!=='no restriction'?`<span class="empty-note" style="text-transform:none;letter-spacing:0">— ${escapeHtml(policy.reason)}</span>`:''}</h4>
+        <div class="control-row">
+          <label>When over quota</label>
+          <select class="action-select" id="quota-action-${d.mac}" onchange="onQuotaActionChange('${d.mac}')">
+            <option value="none" ${d.quota_action==='none'?'selected':''}>Just show it</option>
+            <option value="throttle" ${d.quota_action==='throttle'?'selected':''}>Throttle</option>
+            <option value="block" ${d.quota_action==='block'?'selected':''}>Block</option>
+          </select>
+          <input type="number" min="1" id="quota-rate-${d.mac}" placeholder="kbps" value="${d.throttle_rate_kbps||''}" style="width:70px" class="action-select ${d.quota_action==='throttle'?'':'hidden-field'}">
+          <button class="save-btn" onclick="saveQuotaAction('${d.mac}')">Save</button>
+        </div>
+        <h4 style="margin-top:16px">Scheduled restrictions</h4>
+        <div id="schedule-rules-${d.mac}"><span class="empty-note">Expand to load…</span></div>
+        <div class="new-rule-form" style="margin-top:10px">
+          <div class="dow-picker" id="dow-picker-${d.mac}">
+            ${['S','M','T','W','T','F','S'].map((l,i)=>`<button type="button" class="dow-btn active" data-day="${i}" onclick="toggleDow(this)">${l}</button>`).join('')}
+          </div>
+          <div class="time-row">
+            <input type="time" id="rule-start-${d.mac}" value="22:00">
+            <span class="empty-note">to</span>
+            <input type="time" id="rule-end-${d.mac}" value="07:00">
+            <select class="action-select" id="rule-action-${d.mac}" onchange="onRuleActionChange('${d.mac}')">
+              <option value="block">Block</option>
+              <option value="throttle">Throttle</option>
+            </select>
+            <input type="number" min="1" id="rule-rate-${d.mac}" placeholder="kbps" style="width:60px" class="action-select hidden-field">
+          </div>
+          <div class="control-row">
+            <input type="text" id="rule-label-${d.mac}" placeholder="Label (e.g. Bedtime)" class="action-select" style="flex:1">
+            <button class="save-btn" onclick="addScheduleRule('${d.mac}')">+ Add rule</button>
+          </div>
+        </div>
+      </div>`:''}
+    </div>
+  </div>`;
+}
+
+function toggleExpand(mac) { expandedMac = expandedMac===mac?null:mac; refreshDevices(); }
+</script>
+
+<script>
+// Device actions
+async function renameDevice(mac,name) {
+  if(!name.trim()) return;
+  try { await api(`/api/devices/${encodeURIComponent(mac)}/name`,{method:'POST',body:{friendly_name:name}}); toast('Name saved'); } catch(e){toast('Could not save name');}
+}
+async function armDevice(mac) {
+  try { await api(`/api/devices/${encodeURIComponent(mac)}/arm`,{method:'POST',body:{}}); toast('Tracking started'); refreshDevices(); } catch(e){toast('Could not arm');}
+}
+async function disarmDevice(mac) {
+  try { await api(`/api/devices/${encodeURIComponent(mac)}/disarm`,{method:'POST'}); toast('Tracking stopped'); refreshDevices(); } catch(e){toast('Could not disarm');}
+}
+async function saveQuota(mac) {
+  const input = document.getElementById(`quota-${mac}`);
+  const gb = parseFloat(input.value);
+  const quota_mb = isNaN(gb)||gb<=0?null:Math.round(gb*1024);
+  try { await api(`/api/devices/${encodeURIComponent(mac)}/quota`,{method:'POST',body:{quota_mb}}); toast('Quota saved'); refreshDevices(); } catch(e){toast('Could not save quota');}
+}
+async function addTagPrompt(mac) {
+  const tag = prompt("Enter tag name:"); if(!tag) return;
+  const d = deviceCache[mac]; const tags = d.tags?d.tags.split(','):[];
+  if(tags.includes(tag)) return; tags.push(tag); await saveTags(mac,tags.join(','));
+}
+async function removeTag(mac,tag) { const d=deviceCache[mac]; await saveTags(mac,d.tags.split(',').filter(t=>t!==tag).join(',')); }
+async function saveTags(mac,tags) {
+  try { await api(`/api/devices/${encodeURIComponent(mac)}/tags`,{method:'POST',body:{tags}}); refreshDevices(); } catch(e){toast('Could not save tags');}
+}
+function onQuotaActionChange(mac) {
+  document.getElementById(`quota-rate-${mac}`).classList.toggle('hidden-field', document.getElementById(`quota-action-${mac}`).value!=='throttle');
+}
+async function saveQuotaAction(mac) {
+  const action = document.getElementById(`quota-action-${mac}`).value;
+  const throttle_rate_kbps = action==='throttle'?parseInt(document.getElementById(`quota-rate-${mac}`).value)||null:null;
+  if(action==='throttle'&&!throttle_rate_kbps){toast('Enter a throttle rate in kbps');return;}
+  try { await api(`/api/devices/${encodeURIComponent(mac)}/quota_action`,{method:'POST',body:{action,throttle_rate_kbps}}); toast('Quota action saved'); refreshDevices(); } catch(e){toast('Could not save');}
+}
+function toggleDow(btn) { btn.classList.toggle('active'); }
+function onRuleActionChange(mac) { document.getElementById(`rule-rate-${mac}`).classList.toggle('hidden-field', document.getElementById(`rule-action-${mac}`).value!=='throttle'); }
+function timeToMinutes(hhmm) { const [h,m]=hhmm.split(':').map(Number); return h*60+m; }
+const DOW_LABELS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+async function loadScheduleRules(mac) {
+  const el=document.getElementById(`schedule-rules-${mac}`); if(!el)return;
+  try {
+    const data=await api(`/api/devices/${encodeURIComponent(mac)}/schedule_rules`); if(!data)return;
+    if(!data.rules.length){el.innerHTML='<span class="empty-note">No scheduled restrictions yet.</span>';return;}
+    el.innerHTML=data.rules.map(r=>{
+      const days=r.days_of_week.split(',').map(d=>DOW_LABELS[parseInt(d)]).join(' ');
+      const time=`${String(Math.floor(r.start_minute/60)).padStart(2,'0')}:${String(r.start_minute%60).padStart(2,'0')}–${String(Math.floor(r.end_minute/60)).padStart(2,'0')}:${String(r.end_minute%60).padStart(2,'0')}`;
+      return `<div class="rule-row"><div class="rule-info"><strong>${escapeHtml(r.label||'Unnamed')}</strong> — ${days}, ${time} · ${r.action}</div><div class="rule-actions"><button onclick="toggleScheduleRule('${mac}',${r.id},${!r.enabled})">${r.enabled?'On':'Off'}</button><button onclick="deleteScheduleRule('${mac}',${r.id})">Delete</button></div></div>`;
+    }).join('');
+  } catch(e){el.innerHTML='<span class="empty-note">Could not load rules.</span>';}
+}
+
+async function addScheduleRule(mac) {
+  const days=Array.from(document.querySelectorAll(`#dow-picker-${mac} .dow-btn.active`)).map(b=>b.dataset.day);
+  if(!days.length){toast('Pick at least one day');return;}
+  const start_minute=timeToMinutes(document.getElementById(`rule-start-${mac}`).value);
+  const end_minute=timeToMinutes(document.getElementById(`rule-end-${mac}`).value);
+  const action=document.getElementById(`rule-action-${mac}`).value;
+  const rate=parseInt(document.getElementById(`rule-rate-${mac}`).value)||null;
+  if(action==='throttle'&&!rate){toast('Enter a throttle rate in kbps');return;}
+  const label=document.getElementById(`rule-label-${mac}`).value.trim();
+  try { await api(`/api/devices/${encodeURIComponent(mac)}/schedule_rules`,{method:'POST',body:{label,days_of_week:days.join(','),start_minute,end_minute,action,throttle_rate_kbps:rate}}); toast('Rule added'); loadScheduleRules(mac); refreshDevices(); } catch(e){toast('Could not add rule');}
+}
+async function deleteScheduleRule(mac,ruleId) { try{await api(`/api/devices/${encodeURIComponent(mac)}/schedule_rules/${ruleId}`,{method:'DELETE'});loadScheduleRules(mac);}catch(e){toast('Could not delete rule');} }
+async function toggleScheduleRule(mac,ruleId,enabled) { try{await api(`/api/devices/${encodeURIComponent(mac)}/schedule_rules/${ruleId}/toggle?enabled=${enabled}`,{method:'POST'});loadScheduleRules(mac);}catch(e){toast('Could not update rule');} }
+async function emergencyUnblock() {
+  if(!confirm('This disarms every device and removes all restrictions. Continue?')) return;
+  try { const r=await api('/api/emergency_unblock',{method:'POST'}); if(!r)return; toast(`Unblocked ${r.devices_disarmed} device(s)`); refreshDevices(); } catch(e){toast('Emergency unblock failed');}
+}
+
+async function loadTrace(mac) {
+  try {
+    const{samples}=await api(`/api/devices/${encodeURIComponent(mac)}/bandwidth_history?minutes=20`)||{samples:[]};
+    const el=document.getElementById(`trace-${mac}`); if(!el)return;
+    const combined=samples.map(s=>({total:s.bytes_sent+s.bytes_received}));
+    el.querySelector('path').setAttribute('d',sparklinePath(combined,'total',130,30));
+  } catch(e){}
+}
+async function loadSites(mac) {
+  const el=document.getElementById(`sites-${mac}`); if(!el)return;
+  try {
+    const data=await api(`/api/devices/${encodeURIComponent(mac)}/sites`); if(!data){el.innerHTML='<span class="empty-note">AdGuard not configured.</span>';return;}
+    el.innerHTML=data.top_domains.length?data.top_domains.map(s=>`<div class="site-row"><span class="domain">${escapeHtml(s.domain)}</span><span class="count">${s.count}×</span></div>`).join(''):
+    '<span class="empty-note">No DNS activity recorded.</span>';
+  } catch(e){el.innerHTML='<span class="empty-note">AdGuard not reachable.</span>';}
+}
+async function loadBlocked(mac) {
+  const el=document.getElementById(`blocked-${mac}`); if(!el)return;
+  try {
+    const data=await api(`/api/devices/${encodeURIComponent(mac)}/blocked`); if(!data){el.innerHTML='<span class="empty-note">AdGuard not configured.</span>';return;}
+    if(!data.blocked_count){el.innerHTML='<span class="empty-note">Nothing blocked recently.</span>';return;}
+    const pct=data.total_queries?((data.blocked_count/data.total_queries)*100).toFixed(0):0;
+    el.innerHTML=`<div class="blocked-count">${data.blocked_count} of ${data.total_queries} queries blocked (${pct}%)</div>`+
+      data.top_blocked.map(s=>`<div class="site-row"><span class="domain">${escapeHtml(s.domain)}</span><span class="count">${s.count}×</span></div>`).join('');
+  } catch(e){el.innerHTML='<span class="empty-note">AdGuard not reachable.</span>';}
+}
+
+async function loadPrivacyScore(mac) {
+  const badge = document.getElementById(`pscore-${mac}`);
+  const detail = document.getElementById(`pscore-detail-${mac}`);
+  if (!badge||!detail) return;
+  try {
+    const data = await api(`/api/dns/privacy_score/${encodeURIComponent(mac)}`); if (!data) return;
+    const cls = data.score >= 70 ? 'score-good' : data.score >= 40 ? 'score-mid' : 'score-bad';
+    badge.innerHTML = `<span class="score-circle ${cls}">${data.score}</span>`;
+    detail.innerHTML = data.telemetry_domains.length
+      ? data.telemetry_domains.slice(0,5).map(d=>`<div class="site-row"><span class="domain">${escapeHtml(d.domain)}</span><span class="count">${d.count}×</span></div>`).join('')
+      : '<span class="empty-note">No known telemetry domains detected.</span>';
+  } catch(e) { badge.innerHTML=''; detail.innerHTML='<span class="empty-note">AdGuard not configured.</span>'; }
+}
+
+function trendBarsSvg(days,width,height) {
+  if(!days.length) return '<span class="empty-note">No history yet.</span>';
+  const totals=days.map(d=>d.bytes_sent+d.bytes_received); const max=Math.max(...totals,1);
+  const barW=width/days.length;
+  const bars=days.map((d,i)=>{
+    const h=Math.max(2,(totals[i]/max)*(height-14)); const x=i*barW+barW*.15; const y=height-h-12; const w=barW*.7;
+    const label=new Date(d.day_start*1000).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="var(--signal)" opacity=".8"><title>${label}: ${fmtBytes(totals[i])}</title></rect>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none">${bars}</svg>`;
+}
+
+async function loadTrend(mac) {
+  const el=document.getElementById(`trend-${mac}`); if(!el)return;
+  try { const data=await api(`/api/devices/${encodeURIComponent(mac)}/bandwidth_trend?days=14`); if(!data)return; el.innerHTML=trendBarsSvg(data.days,260,70); } catch(e){el.innerHTML='<span class="empty-note">Could not load trend.</span>';}
+}
+</script>
+
+<script>
+// ============================================================
+// TOPOLOGY (D3 force-directed graph)
+// ============================================================
+let topoSvg = null;
+
+async function renderTopology() {
+  const container = document.getElementById('topoCanvas');
+  container.innerHTML = '';
+  let data;
+  try { data = await api('/api/topology'); if (!data) return; } catch(e) { container.innerHTML = '<div class="empty-note" style="padding:40px;text-align:center">Could not load topology data.</div>'; return; }
+
+  const width = container.offsetWidth || 900;
+  const height = 520;
+
+  const svg = d3.select(container).append('svg')
+    .attr('width', width).attr('height', height)
+    .call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', e => g.attr('transform', e.transform)));
+
+  const g = svg.append('g');
+
+  const nodes = data.nodes.map(d => ({ ...d }));
+  const edges = data.edges.map(e => ({ ...e }));
+
+  const nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const links = edges.map(e => ({ source: nodeById[e.source] || e.source, target: nodeById[e.target] || e.target }));
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+    .force('charge', d3.forceManyBody().strength(-300))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collide', d3.forceCollide(36));
+
+  const link = g.append('g').selectAll('line').data(links).join('line')
+    .attr('stroke', '#212B38').attr('stroke-width', 1.5).attr('stroke-dasharray', d => {
+      const t = d.target; return (t.bandwidth_armed) ? '4,2' : null;
+    });
+
+  const node = g.append('g').selectAll('g').data(nodes).join('g')
+    .call(d3.drag()
+      .on('start', (e,d) => { if(!e.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on('drag',  (e,d) => { d.fx=e.x; d.fy=e.y; })
+      .on('end',   (e,d) => { if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+
+  node.append('circle')
+    .attr('r', d => d.type === 'router' ? 22 : 16)
+    .attr('fill', d => {
+      if (d.type === 'router') return 'rgba(79,216,196,0.25)';
+      if (d.type === 'host') return 'rgba(232,168,87,0.2)';
+      if (!d.is_online) return 'rgba(76,87,104,0.3)';
+      return 'rgba(79,216,196,0.12)';
+    })
+    .attr('stroke', d => {
+      if (d.type === 'router') return '#4FD8C4';
+      if (d.type === 'host') return '#E8A857';
+      if (!d.is_online) return '#4C5768';
+      if (d.bandwidth_armed) return '#E8646A';
+      return '#4FD8C4';
+    })
+    .attr('stroke-width', d => d.type === 'router' ? 2.5 : 1.5)
+    .attr('stroke-opacity', d => d.is_online ? 1 : 0.4);
+
+  // Router icon text
+  node.filter(d => d.type === 'router').append('text')
+    .attr('text-anchor', 'middle').attr('dy', '0.35em')
+    .attr('fill', '#4FD8C4').attr('font-size', '14px').text('⬡');
+
+  // Device label
+  node.append('text')
+    .attr('text-anchor', 'middle').attr('dy', d => (d.type === 'router' ? 34 : 28))
+    .attr('fill', d => d.is_online ? '#EDEFF2' : '#4C5768')
+    .attr('font-size', '11px').attr('font-family', "'IBM Plex Sans', sans-serif")
+    .text(d => (d.label || d.id).slice(0, 18));
+
+  node.append('text')
+    .attr('text-anchor', 'middle').attr('dy', d => (d.type === 'router' ? 46 : 40))
+    .attr('fill', '#4C5768').attr('font-size', '9px').attr('font-family', "'IBM Plex Mono', monospace")
+    .text(d => d.ip || '');
+
+  node.append('title').text(d => [d.label, d.ip, d.mac, d.vendor].filter(Boolean).join('\n'));
+
+  sim.on('tick', () => {
+    link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+}
+</script>
+
+<script>
+// ============================================================
+// SPEED TEST TAB
+// ============================================================
+async function loadSpeedtestData() {
+  try {
+    const latest = await api('/api/speedtest/latest'); 
+    if (latest && latest.at) {
+      document.getElementById('stDown').textContent = latest.download_mbps.toFixed(1);
+      document.getElementById('stUp').textContent = latest.upload_mbps.toFixed(1);
+      document.getElementById('stPing').textContent = latest.ping_ms.toFixed(0);
+      document.getElementById('stISP').textContent = [latest.isp, latest.server_name].filter(Boolean).join(' · ');
+    }
+    const hist = await api('/api/speedtest/history?limit=20');
+    if (!hist) return;
+    const tbody = hist.results.map(r =>
+      `<tr>
+        <td>${new Date(r.at*1000).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
+        <td class="hl">${r.download_mbps.toFixed(1)}</td>
+        <td class="hl">${r.upload_mbps.toFixed(1)}</td>
+        <td>${r.ping_ms.toFixed(0)}</td>
+        <td>${escapeHtml(r.isp||'')}</td>
+        <td>${escapeHtml(r.server_name||'')}</td>
+      </tr>`
+    ).join('');
+    document.getElementById('speedtestHistory').innerHTML = hist.results.length
+      ? `<table><thead><tr><th>Time</th><th>↓ Mbps</th><th>↑ Mbps</th><th>Ping</th><th>ISP</th><th>Server</th></tr></thead><tbody>${tbody}</tbody></table>`
+      : '<div class="empty-note" style="padding:16px">No speed tests run yet. Click the button above.</div>';
+  } catch(e) { console.error('speedtest load error', e); }
+}
+
+async function runSpeedtest() {
+  const btn = document.getElementById('runSpeedtestBtn');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/speedtest/run', { method: 'POST' }); if (!r) return;
+    toast('Speed test started — results appear when done (~30s)');
+    // Poll for result
+    let polls = 0;
+    const poll = setInterval(async () => {
+      polls++;
+      const status = await api('/api/speedtest/status').catch(() => null);
+      if (status && !status.running) {
+        clearInterval(poll);
+        await loadSpeedtestData();
+        btn.disabled = false;
+        toast('Speed test complete');
+      }
+      if (polls > 60) { clearInterval(poll); btn.disabled = false; } // 2 min timeout
+    }, 2000);
+  } catch(e) { toast('Could not start speed test'); btn.disabled = false; }
+}
+
+// ============================================================
+// DNS LIVE TAB
+// ============================================================
+let dnsEventSource = null, dnsStreamActive = false, dnsEntries = [];
+const DNS_MAX_ENTRIES = 300;
+
+function ensureDnsStream() {
+  if (dnsEventSource) return;
+  startDnsStream();
+}
+
+function startDnsStream() {
+  dnsStreamActive = true;
+  document.getElementById('dnsStreamBtn').textContent = '⏸ Pause';
+  document.getElementById('dnsStreamBtn').classList.add('active');
+
+  const t = getToken();
+  const url = t ? `/api/dns/stream?token=${encodeURIComponent(t)}` : '/api/dns/stream';
+  dnsEventSource = new EventSource(url);
+  dnsEventSource.onmessage = (e) => {
+    if (!dnsStreamActive) return;
+    try {
+      const entry = JSON.parse(e.data);
+      if (entry.error) return;
+      dnsEntries.unshift(entry);
+      if (dnsEntries.length > DNS_MAX_ENTRIES) dnsEntries.length = DNS_MAX_ENTRIES;
+      renderDnsList();
+    } catch(err) {}
+  };
+  dnsEventSource.onerror = () => {
+    // auto-reconnect is handled by EventSource
+  };
+}
+
+function toggleDnsStream() {
+  dnsStreamActive = !dnsStreamActive;
+  const btn = document.getElementById('dnsStreamBtn');
+  if (dnsStreamActive) {
+    btn.textContent = '⏸ Pause'; btn.classList.add('active');
+    if (!dnsEventSource) startDnsStream();
+  } else {
+    btn.textContent = '▶ Resume'; btn.classList.remove('active');
+  }
+}
+
+function clearDnsList() {
+  dnsEntries = [];
+  document.getElementById('dnsStreamList').innerHTML = '<div class="empty-note">Cleared.</div>';
+}
+
+function renderDnsList() {
+  const filter = (document.getElementById('dnsFilter').value || '').toLowerCase();
+  const blockedOnly = document.getElementById('dnsBlockedOnly').checked;
+  const list = document.getElementById('dnsStreamList');
+
+  const visible = dnsEntries.filter(e => {
+    if (blockedOnly && !e.blocked) return false;
+    if (filter && !e.domain.toLowerCase().includes(filter) && !e.device_name.toLowerCase().includes(filter) && !e.client_ip.includes(filter)) return false;
+    return true;
+  }).slice(0, 100);
+
+  if (!visible.length) { list.innerHTML = '<div class="empty-note">No matching queries yet…</div>'; return; }
+
+  list.innerHTML = visible.map(e =>
+    `<div class="dns-entry">
+      <span class="dns-time">${fmtTime(e.time)}</span>
+      <span class="dns-client" title="${escapeHtml(e.client_ip)}">${escapeHtml(e.device_name)}</span>
+      <span class="dns-domain">${escapeHtml(e.domain)}</span>
+      ${e.blocked ? '<span class="dns-blocked">BLOCKED</span>' : ''}
+    </div>`
+  ).join('');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('dnsFilter').addEventListener('input', renderDnsList);
+  document.getElementById('dnsBlockedOnly').addEventListener('change', renderDnsList);
+});
+
+// ============================================================
+// ADMIN TAB — USER MANAGEMENT
+// ============================================================
+async function loadUsers() {
+  if (getRole() !== 'admin') return;
+  try {
+    const data = await api('/api/auth/users'); if (!data) return;
+    document.getElementById('userList').innerHTML = data.users.map(u =>
+      `<div class="user-row">
+        <div class="user-info">
+          <span>${escapeHtml(u.username)}</span>
+          <span class="role-badge ${u.role}">${u.role}</span>
+        </div>
+        <div class="user-actions">
+          <button onclick="changePassword('${escapeHtml(u.username)}')">Change pw</button>
+          <button onclick="deleteUser('${escapeHtml(u.username)}')">Delete</button>
+        </div>
+      </div>`
+    ).join('') || '<div class="empty-note">No users yet.</div>';
+  } catch(e) { document.getElementById('userList').innerHTML = '<div class="empty-note">Could not load users.</div>'; }
+}
+
+async function createUser() {
+  const username = document.getElementById('newUserName').value.trim();
+  const password = document.getElementById('newUserPass').value;
+  const role = document.getElementById('newUserRole').value;
+  if (!username || !password) { toast('Username and password required'); return; }
+  try {
+    await api('/api/auth/users', { method: 'POST', body: { username, password, role } });
+    toast('User created'); document.getElementById('newUserName').value = ''; document.getElementById('newUserPass').value = '';
+    loadUsers();
+  } catch(e) { toast('Could not create user'); }
+}
+
+async function deleteUser(username) {
+  if (!confirm(`Delete user "${username}"?`)) return;
+  try { await api(`/api/auth/users/${encodeURIComponent(username)}`, { method: 'DELETE' }); toast('User deleted'); loadUsers(); }
+  catch(e) { toast('Could not delete user'); }
+}
+
+async function changePassword(username) {
+  const pw = prompt(`New password for ${username}:`);
+  if (!pw) return;
+  try { await api('/api/auth/users/password', { method: 'POST', body: { username, new_password: pw } }); toast('Password changed'); }
+  catch(e) { toast('Could not change password'); }
+}
+</script>
+
+<script>
+// ============================================================
+// CLOCK + PULSE ANIMATION
+// ============================================================
+function updateClock() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
+function animateAggregatePulse() {
+  const path = document.getElementById('aggregatePath');
+  let t = 0;
+  function frame() {
+    t += 0.04;
+    let d = 'M0,18';
+    for (let x = 0; x <= 300; x += 6) {
+      const y = 18 + Math.sin(x*0.05+t)*3*Math.sin(t*0.3);
+      d += ` L${x},${y.toFixed(1)}`;
+    }
+    path.setAttribute('d', d);
+    requestAnimationFrame(frame);
+  }
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) frame();
+}
+
+// ============================================================
+// BOOTSTRAP
+// ============================================================
+function startAll() {
+  refreshDevices();
+  refreshStatus();
+  refreshEvents();
+  setInterval(refreshDevices, POLL_DEVICES_MS);
+  setInterval(refreshStatus, POLL_STATUS_MS);
+  setInterval(refreshEvents, POLL_EVENTS_MS);
+}
+
+updateClock();
+setInterval(updateClock, 1000);
+animateAggregatePulse();
+init();
+</script>
+</body>
+</html>
