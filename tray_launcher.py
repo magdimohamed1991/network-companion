@@ -24,10 +24,15 @@ import webbrowser
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths — resolve project root correctly both when run as .py and as .exe
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+# When frozen by PyInstaller, sys.executable is the .exe itself sitting in
+# the project root. When run as a plain .py, __file__ gives us the script.
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = Path(sys.executable).resolve().parent
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent
 PYTHON_EXE = PROJECT_ROOT / "python" / "python.exe"
 ADGUARD_EXE = PROJECT_ROOT / "adguard" / "AdGuardHome.exe"
 CONFIG_PATH = PROJECT_ROOT / "config.json"
@@ -298,10 +303,13 @@ if __name__ == "__main__":
 
     # Check bundled Python exists
     if not PYTHON_EXE.exists():
-        import tkinter.messagebox as mb
-        mb.showerror(
-            "Network Companion",
+        # Use Windows MessageBox directly — tkinter is not in embeddable Python
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0,
             f"Bundled Python not found at:\n{PYTHON_EXE}\n\nRun setup.ps1 first.",
+            "Network Companion",
+            0x10,  # MB_ICONERROR
         )
         sys.exit(1)
 

@@ -18,7 +18,7 @@ Write-Host "[*] Building NetworkCompanion.exe..." -ForegroundColor Cyan
     --onefile `
     --windowed `
     --name NetworkCompanion `
-    --distpath "$ProjectRoot" `
+    "--distpath=$ProjectRoot" `
     "$ProjectRoot\tray_launcher.py"
 
 # Clean up build artifacts
