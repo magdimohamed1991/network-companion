@@ -31,9 +31,41 @@ PING_TIMEOUT_MS = 300
 PING_WORKERS = 64
 
 
-def subnet_hosts(local_ip: str) -> list[str]:
-    """Assumes a /24 (the overwhelming majority of home networks). Override with --subnet if not."""
-    prefix = ".".join(local_ip.split(".")[:3])
+def get_all_local_subnets() -> list[str]:
+    """
+    Return all unique /24 prefixes for this machine's private IPv4 interfaces.
+    Handles the common case where the machine is on both a home LAN (192.168.x.x)
+    and a hotspot/VPN (10.x.x.x) simultaneously — we want to scan all of them.
+    Falls back to the single active-socket IP if nothing else works.
+    """
+    prefixes = set()
+    try:
+        # ipconfig gives us all bound addresses — much more reliable than
+        # the single-socket trick which returns whichever interface routes to 8.8.8.8
+        output = subprocess.check_output("ipconfig", shell=True, text=True, errors="ignore")
+        for match in re.finditer(r"IPv4 Address[ .]*:\s*([\d.]+)", output):
+            ip = match.group(1).strip()
+            # Skip loopback and APIPA
+            if ip.startswith("127.") or ip.startswith("169.254."):
+                continue
+            prefix = ".".join(ip.split(".")[:3])
+            prefixes.add(prefix)
+    except Exception:
+        pass
+
+    if not prefixes:
+        # Fallback: single active-route IP
+        try:
+            ip = get_local_ip()
+            prefixes.add(".".join(ip.split(".")[:3]))
+        except Exception:
+            pass
+
+    return sorted(prefixes)
+
+
+def subnet_hosts(prefix: str) -> list[str]:
+    """Return all host addresses for a /24 prefix (e.g. '192.168.1')."""
     return [f"{prefix}.{i}" for i in range(1, 255)]
 
 
@@ -88,20 +120,33 @@ def read_arp_table() -> list[dict]:
 
 
 def resolve_hostname(ip: str, timeout: float = 0.5) -> str | None:
+    """Reverse-DNS lookup. Returns None if the result is just the IP itself (no real hostname)."""
     socket.setdefaulttimeout(timeout)
     try:
-        return socket.gethostbyaddr(ip)[0]
+        name = socket.gethostbyaddr(ip)[0]
+        # gethostbyaddr sometimes returns the IP unchanged when there's no PTR record
+        if name and name != ip:
+            return name
+        return None
     except (socket.herror, socket.timeout, OSError):
         return None
 
 
 def run_one_scan(subnet_override: list[str] | None = None):
     started = time.time()
-    local_ip = get_local_ip()
-    hosts = subnet_override or subnet_hosts(local_ip)
 
-    print(f"[i] Scanning {len(hosts)} addresses on {'.'.join(local_ip.split('.')[:3])}.0/24 ...")
-    ping_sweep(hosts)
+    if subnet_override:
+        all_hosts = subnet_override
+        subnets_label = "override"
+    else:
+        prefixes = get_all_local_subnets()
+        all_hosts = []
+        for p in prefixes:
+            all_hosts.extend(subnet_hosts(p))
+        subnets_label = ", ".join(f"{p}.0/24" for p in prefixes)
+
+    print(f"[i] Scanning {len(all_hosts)} addresses across: {subnets_label} ...")
+    ping_sweep(all_hosts)
     arp_pairs = read_arp_table()
 
     seen_macs = set()
@@ -118,7 +163,7 @@ def run_one_scan(subnet_override: list[str] | None = None):
             print(f"[+] New device: {label} — {ip} ({mac})")
 
     database.mark_stale_devices_offline(seen_macs)
-    database.log_scan(started, time.time(), len(seen_macs), f"{'.'.join(local_ip.split('.')[:3])}.0/24")
+    database.log_scan(started, time.time(), len(seen_macs), subnets_label)
     print(f"[i] Scan complete: {len(seen_macs)} devices online, {new_count} new. "
           f"({time.time() - started:.1f}s)")
 
