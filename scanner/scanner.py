@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import database
 from netutils import get_local_ip
-from oui_vendors import lookup_vendor
+from oui_vendors import lookup_vendor, lookup_device_type
 
 SCAN_INTERVAL_SECONDS = 60
 PING_TIMEOUT_MS = 300
@@ -155,7 +155,8 @@ def run_one_scan(subnet_override: list[str] | None = None):
         ip, ipv6, mac = entry["ip"], entry["ipv6"], entry["mac"]
         hostname = resolve_hostname(ip) if ip else None
         vendor = lookup_vendor(mac)
-        is_new = database.upsert_device(mac, ip, ipv6, hostname, vendor)
+        device_type = lookup_device_type(mac, hostname, ip)
+        is_new = database.upsert_device(mac, ip, ipv6, hostname, vendor, device_type)
         seen_macs.add(mac)
         if is_new:
             new_count += 1

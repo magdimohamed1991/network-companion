@@ -362,6 +362,19 @@
 
 <!-- ADMIN TAB -->
 <div class="tab-panel" id="panel-admin">
+  <div class="admin-panel" style="margin-bottom:20px">
+    <h3>AdGuard Home — DNS Integration</h3>
+    <p style="font-size:12px;color:var(--text-dim);margin:0 0 14px">Connect AdGuard Home to enable DNS query monitoring, per-device top sites, and privacy scores. AdGuard must be running at the URL below.</p>
+    <div class="add-user-form" style="grid-template-columns:1fr 1fr 1fr">
+      <div><label>AdGuard URL</label><input type="text" id="aghUrl" placeholder="http://127.0.0.1:3000"></div>
+      <div><label>Username</label><input type="text" id="aghUser" placeholder="admin" autocomplete="off"></div>
+      <div><label>Password</label><input type="password" id="aghPass" placeholder="••••••••" autocomplete="off"></div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
+      <button class="save-btn" onclick="saveAdguardConfig()">Save &amp; Reconnect</button>
+      <span id="aghStatus" style="font-size:12px;color:var(--text-dim)"></span>
+    </div>
+  </div>
   <div class="admin-panel">
     <h3>User Management</h3>
     <div id="userList"></div>
@@ -473,7 +486,7 @@ function switchTab(name) {
   if (name === 'topology') renderTopology();
   if (name === 'speedtest') loadSpeedtestData();
   if (name === 'dns') ensureDnsStream();
-  if (name === 'admin') loadUsers();
+  if (name === 'admin') { loadUsers(); loadAdguardConfig(); }
 }
 
 // ============================================================
@@ -509,6 +522,19 @@ function toast(msg) {
 
 function escapeHtml(str) {
   const d = document.createElement('div'); d.textContent = str ?? ''; return d.innerHTML;
+}
+
+const _DEVICE_TYPE_LABELS = {
+  phone:'📱 Phone', laptop:'💻 Laptop', pc:'🖥️ PC', vm:'🖥️ VM',
+  router:'🌐 Router / AP', tv:'📺 TV / Streaming', game_console:'🎮 Game Console',
+  smart_speaker:'🔊 Smart Speaker', smart_home:'🏠 Smart Home', iot:'⚡ IoT Device',
+  camera:'📷 Camera', printer:'🖨️ Printer', nas:'🗄️ NAS', device:'📡 Device',
+};
+function deviceTypeLabel(d) {
+  // Show vendor name if we have one (non-randomized MAC), otherwise device type, otherwise "Unknown device"
+  if (d.vendor) return d.vendor + (d.device_type ? ' · ' + (_DEVICE_TYPE_LABELS[d.device_type] || d.device_type) : '');
+  if (d.device_type) return _DEVICE_TYPE_LABELS[d.device_type] || d.device_type;
+  return 'Unknown device';
 }
 
 function sparklinePath(samples, key, width, height) {
@@ -622,7 +648,7 @@ function renderDevice(d) {
                  ${isAdmin?'':'readonly'} onclick="event.stopPropagation()" onchange="renameDevice('${d.mac}',this.value)">
           ${isRestricted ? `<span class="policy-badge ${policy.action}" title="${escapeHtml(policy.reason)}">${policy.action}</span>` : ''}
         </div>
-        <div class="device-meta">${escapeHtml(d.vendor||'Unknown vendor')} · <span class="mono">${d.ip||'—'}</span> · <span class="mono">${d.mac}</span></div>
+        <div class="device-meta">${escapeHtml(deviceTypeLabel(d))} · <span class="mono">${d.ip||'—'}</span> · <span class="mono">${d.mac}</span></div>
         <div class="device-tags">
           ${(d.tags||'').split(',').filter(t=>t).map(t=>`<span class="tag" onclick="event.stopPropagation();${isAdmin?`removeTag('${d.mac}','${t}')`:''}"">${escapeHtml(t)}</span>`).join('')}
           ${isAdmin?`<span class="tag add-tag" onclick="event.stopPropagation();addTagPrompt('${d.mac}')">+ tag</span>`:''}
@@ -1060,8 +1086,34 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ============================================================
-// ADMIN TAB — USER MANAGEMENT
+// ADMIN TAB — ADGUARD CONFIG + USER MANAGEMENT
 // ============================================================
+async function loadAdguardConfig() {
+  try {
+    const data = await api('/api/config/adguard');
+    if (!data) return;
+    document.getElementById('aghUrl').value = data.adguard_url || '';
+    document.getElementById('aghUser').value = data.adguard_username || '';
+    // Never pre-fill password for security — just show placeholder
+    document.getElementById('aghStatus').textContent = data.adguard_username ? '✓ credentials saved' : 'not configured';
+  } catch(e) {}
+}
+
+async function saveAdguardConfig() {
+  const url = document.getElementById('aghUrl').value.trim();
+  const user = document.getElementById('aghUser').value.trim();
+  const pass = document.getElementById('aghPass').value;
+  const statusEl = document.getElementById('aghStatus');
+  if (!url || !user || !pass) { statusEl.textContent = 'Fill in all three fields'; statusEl.style.color = 'var(--coral)'; return; }
+  try {
+    statusEl.textContent = 'Saving…'; statusEl.style.color = 'var(--text-dim)';
+    await api('/api/config/adguard', { method: 'POST', body: { adguard_url: url, adguard_username: user, adguard_password: pass } });
+    statusEl.textContent = '✓ Saved — dashboard will reconnect on next request'; statusEl.style.color = 'var(--signal)';
+    document.getElementById('aghPass').value = '';
+    toast('AdGuard config saved — refresh to activate');
+  } catch(e) { statusEl.textContent = 'Save failed: ' + e.message; statusEl.style.color = 'var(--coral)'; }
+}
+
 async function loadUsers() {
   if (getRole() !== 'admin') return;
   try {

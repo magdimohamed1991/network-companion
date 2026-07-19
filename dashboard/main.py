@@ -175,6 +175,11 @@ class ChangePasswordRequest(BaseModel):
     username: str
     new_password: str
 
+class AdGuardConfigRequest(BaseModel):
+    adguard_url: str
+    adguard_username: str
+    adguard_password: str
+
 
 # ---------- Startup ----------
 
@@ -412,6 +417,36 @@ def toggle_schedule_rule(mac: str, rule_id: int, enabled: bool, user: dict = Dep
 def emergency_unblock(user: dict = Depends(_require_admin)):
     count = database.disarm_all_devices()
     return {"ok": True, "devices_disarmed": count}
+
+
+# ---------- Config endpoints ----------
+
+@app.get("/api/config/adguard")
+def get_adguard_config(user: dict = Depends(_require_admin)):
+    cfg = config.load()
+    return {
+        "adguard_url": cfg.get("adguard_url", "http://127.0.0.1:3000"),
+        "adguard_username": cfg.get("adguard_username", ""),
+        # Never return the password
+    }
+
+
+@app.post("/api/config/adguard")
+def save_adguard_config(body: AdGuardConfigRequest, user: dict = Depends(_require_admin)):
+    global _agh
+    cfg = config.load()
+    cfg["adguard_url"] = body.adguard_url.rstrip("/")
+    cfg["adguard_username"] = body.adguard_username
+    cfg["adguard_password"] = body.adguard_password
+    config.save(cfg)
+    # Reload the client immediately — no restart needed
+    _agh = AdGuardClient(cfg["adguard_url"], cfg["adguard_username"], cfg["adguard_password"])
+    # Quick connectivity check
+    try:
+        _agh.status()
+        return {"ok": True, "reachable": True}
+    except Exception as e:
+        return {"ok": True, "reachable": False, "error": str(e)}
 
 
 # ---------- AdGuard / DNS ----------

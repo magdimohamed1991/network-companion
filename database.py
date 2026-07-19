@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS devices (
     vendor          TEXT,
     friendly_name   TEXT,
     tags            TEXT,             -- Phase 4: comma-separated tags
+    device_type     TEXT,             -- inferred: phone/laptop/pc/router/tv/etc.
     is_known        INTEGER NOT NULL DEFAULT 0,
     monthly_quota_mb INTEGER,
     first_seen      REAL NOT NULL,
@@ -177,19 +178,33 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        # Migrations for existing databases
+        _migrate(conn)
 
 
-def upsert_device(mac: str, ip: str, ipv6: str | None, hostname: str | None, vendor: str | None):
-    """Insert a newly-seen device or refresh an existing one. Returns True if this is a brand-new device."""
+def _migrate(conn):
+    """Add columns introduced after initial release without dropping the DB."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
+    if "device_type" not in existing:
+        conn.execute("ALTER TABLE devices ADD COLUMN device_type TEXT")
+
+
+def upsert_device(mac: str, ip: str, ipv6: str | None, hostname: str | None, vendor: str | None,
+                  device_type: str | None = None):
+    """Insert a newly-seen device or refresh an existing one. Returns True if brand-new."""
     now = time.time()
+    # Never store IP address as hostname — it's meaningless noise
+    if hostname and hostname == ip:
+        hostname = None
+
     with get_conn() as conn:
         row = conn.execute("SELECT mac, is_online FROM devices WHERE mac = ?", (mac,)).fetchone()
         if row is None:
             conn.execute(
-                """INSERT INTO devices (mac, ip, ipv6, hostname, vendor, friendly_name, is_known,
-                                         first_seen, last_seen, is_online)
-                   VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 1)""",
-                (mac, ip, ipv6, hostname, vendor, hostname or vendor or mac, now, now),
+                """INSERT INTO devices (mac, ip, ipv6, hostname, vendor, friendly_name, device_type,
+                                         is_known, first_seen, last_seen, is_online)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)""",
+                (mac, ip, ipv6, hostname, vendor, hostname or vendor, device_type, now, now),
             )
             conn.execute(
                 "INSERT INTO device_events (mac, event_type, at) VALUES (?, 'new_device', ?)",
@@ -198,11 +213,19 @@ def upsert_device(mac: str, ip: str, ipv6: str | None, hostname: str | None, ven
             return True
         else:
             was_offline = row["is_online"] == 0
+            # Only update hostname/vendor/device_type if the new value is not None
+            # (COALESCE keeps existing good value when new scan returns nothing)
             conn.execute(
-                """UPDATE devices SET ip = ?, ipv6 = COALESCE(?, ipv6), last_seen = ?, is_online = 1,
-                   hostname = COALESCE(?, hostname), vendor = COALESCE(?, vendor)
+                """UPDATE devices SET
+                   ip = ?,
+                   ipv6 = COALESCE(?, ipv6),
+                   last_seen = ?,
+                   is_online = 1,
+                   hostname = COALESCE(?, hostname),
+                   vendor = COALESCE(?, vendor),
+                   device_type = COALESCE(?, device_type)
                    WHERE mac = ?""",
-                (ip, ipv6, now, hostname, vendor, mac),
+                (ip, ipv6, now, hostname, vendor, device_type, mac),
             )
             if was_offline:
                 conn.execute(
