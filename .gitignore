@@ -31,3 +31,14 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Embedded Python runtime
+python/
+
+# AdGuard binary and data
+adguard/*.exe
+adguard/data/
+
+# Installer binaries/archives
+install/*.exe
+install/*.zip
