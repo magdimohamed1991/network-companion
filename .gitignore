@@ -42,3 +42,8 @@ adguard/data/
 # Installer binaries/archives
 install/*.exe
 install/*.zip
+
+# PyInstaller build artifacts
+build/
+*.spec
+NetworkCompanion.exe

@@ -31,7 +31,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$TaskNames = @("NetworkCompanion-Scanner", "NetworkCompanion-ArpSpoofer", "NetworkCompanion-Dashboard", "NetworkCompanion-Maintenance", "NetworkCompanion-Notifier", "NetworkCompanion-SNMPMonitor")
+$TaskNames = @("NetworkCompanion-Scanner", "NetworkCompanion-ArpSpoofer", "NetworkCompanion-Dashboard", "NetworkCompanion-Maintenance", "NetworkCompanion-Notifier", "NetworkCompanion-SNMPMonitor", "NetworkCompanion-AnomalyDetector")
 
 if ($Unregister) {
     foreach ($name in $TaskNames) {
@@ -105,6 +105,12 @@ $snmpAction = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$ProjectR
 Register-ScheduledTask -TaskName "NetworkCompanion-SNMPMonitor" -Action $snmpAction -Trigger $logonTrigger `
     -Settings $commonSettings -Description "Network Companion: router SNMP bandwidth monitoring" -Force | Out-Null
 Write-Host "Registered NetworkCompanion-SNMPMonitor"
+
+# --- Anomaly Detector: rule-based traffic anomaly alerts ---
+$anomalyAction = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$ProjectRoot\anomaly_detector.py`"" -WorkingDirectory $ProjectRoot
+Register-ScheduledTask -TaskName "NetworkCompanion-AnomalyDetector" -Action $anomalyAction -Trigger $logonTrigger `
+    -Settings $commonSettings -Description "Network Companion: upload spike / quiet-hour / new-device anomaly alerts" -Force | Out-Null
+Write-Host "Registered NetworkCompanion-AnomalyDetector"
 
 Write-Host "`nStarting all six now (rather than waiting for next logon/schedule)..." -ForegroundColor Cyan
 foreach ($name in $TaskNames) { Start-ScheduledTask -TaskName $name }
