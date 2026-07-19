@@ -96,11 +96,16 @@ def _start_service(svc: dict) -> bool:
     """Start a single service. Returns True if launched successfully."""
     name = svc["name"]
 
-    # Skip optional services whose binary doesn't exist
+    # Skip optional services whose binary doesn't exist or is inaccessible
     binary = svc.get("optional_binary")
-    if binary and not Path(binary).exists():
-        print(f"[!] {name}: binary not found at {binary}, skipping.")
-        return False
+    if binary:
+        try:
+            exists = Path(binary).exists()
+        except PermissionError:
+            exists = True  # file is locked/running — treat as present
+        if not exists:
+            print(f"[!] {name}: binary not found at {binary}, skipping.")
+            return False
 
     # Don't double-start
     with _lock:
@@ -303,7 +308,6 @@ if __name__ == "__main__":
 
     # Check bundled Python exists
     if not PYTHON_EXE.exists():
-        # Use Windows MessageBox directly — tkinter is not in embeddable Python
         import ctypes
         ctypes.windll.user32.MessageBoxW(
             0,
@@ -314,7 +318,17 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print("[i] Starting Network Companion…")
-    start_all()
+    try:
+        start_all()
+    except Exception as e:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"Failed to start services:\n{e}\n\nCheck that no other instance is already running.",
+            "Network Companion",
+            0x10,
+        )
+        sys.exit(1)
 
     # Start watchdog in background
     threading.Thread(target=_watchdog, daemon=True).start()
