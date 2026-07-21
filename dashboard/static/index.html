@@ -106,7 +106,8 @@ header{position:sticky;top:0;z-index:10;background:rgba(10,14,20,.92);backdrop-f
 /* status cell */
 .td-status{width:28px}
 .led-dot{width:8px;height:8px;border-radius:50%;background:var(--text-faint);display:inline-block;flex-shrink:0}
-.online-led{background:var(--signal);box-shadow:0 0 6px var(--signal-glow)}
+.online-led{background:var(--signal);box-shadow:0 0 5px var(--signal-glow);animation:pulse-led 2.4s ease-in-out infinite}
+@keyframes pulse-led{0%,100%{box-shadow:0 0 4px var(--signal-glow)}50%{box-shadow:0 0 10px var(--signal-glow),0 0 18px var(--signal-glow)}}
 /* name cell */
 .td-name{min-width:140px}
 .device-name-input{background:none;border:none;color:var(--text);font-weight:600;font-size:13px;font-family:var(--font);width:100%;cursor:pointer;border-radius:3px;padding:1px 4px;transition:background .12s}
@@ -133,13 +134,14 @@ header{position:sticky;top:0;z-index:10;background:rgba(10,14,20,.92);backdrop-f
 .row-action-btn{width:26px;height:26px;border-radius:5px;border:1px solid var(--border);color:var(--text-faint);font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s}
 .row-action-btn:hover{color:var(--signal);border-color:var(--signal-dim);background:rgba(79,216,196,.06)}
 /* chevron */
-.td-chevron{width:24px;color:var(--text-faint);font-size:10px;transition:transform .2s}
-.device-row.expanded .td-chevron{transform:rotate(90deg);color:var(--signal)}
+.td-chevron{width:24px;text-align:center}
+.td-chevron span{display:inline-block;color:var(--text-faint);font-size:10px;transition:transform .2s,color .15s}
+.device-row.expanded .td-chevron span{transform:rotate(90deg);color:var(--signal)}
 /* ── Drawer row ── */
-tr.device-drawer td{padding:0;border-bottom:1px solid var(--border)}
-.drawer-inner{padding:20px;display:grid;grid-template-columns:1fr 1fr;gap:20px;background:var(--bg)}
+tr.device-drawer td{padding:0;border-bottom:2px solid var(--signal-dim)}
+.drawer-inner{padding:20px;display:grid;grid-template-columns:1fr 1fr;gap:20px;background:var(--bg);border-top:1px solid var(--border)}
 @media(max-width:700px){.drawer-inner{grid-template-columns:1fr}}
-.access-block{padding:16px 20px;border-top:1px solid var(--border);background:var(--bg)}
+.access-block{padding:16px 20px 20px;border-top:1px solid var(--border);background:var(--bg)}
 .detail-block h4{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint);margin:0 0 10px;font-weight:600}
 .site-row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)}
 .site-row:last-child{border-bottom:none}
@@ -629,7 +631,10 @@ function sortDevices(col){
   document.querySelectorAll('.sort-arrow').forEach(el=>el.textContent='');
   const el=document.getElementById(`sarr-${col}`);
   if(el)el.textContent=sortDir===-1?'↓':'↑';
-  document.querySelectorAll('.devices-table th').forEach(th=>th.classList.remove('sorted'));
+  // Highlight sorted column header
+  document.querySelectorAll('.devices-table thead th').forEach(th=>{
+    th.classList.toggle('sorted', th.querySelector(`#sarr-${col}`)!==null);
+  });
   renderDeviceTable();
 }
 
@@ -712,7 +717,7 @@ function renderDeviceRow(d){
     <td class="td-actions" onclick="event.stopPropagation()">
       ${d.bandwidth_armed?`<div id="sparkline-${d.mac}" style="width:60px;height:22px"><svg viewBox="0 0 60 22" width="60" height="22"><path id="spark-path-${d.mac}" d="M0,11 L60,11" fill="none" stroke="var(--signal)" stroke-width="1.5"/></svg></div>`:''}
     </td>
-    <td class="td-chevron">▶</td>
+    <td class="td-chevron"><span>▶</span></td>
   </tr>`;
 }
 </script>
