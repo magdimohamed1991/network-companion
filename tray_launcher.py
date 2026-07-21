@@ -3,7 +3,7 @@ tray_launcher.py — Network Companion system tray launcher.
 
 Double-click NetworkCompanion.exe (built from this script) to:
   • Start all services (AdGuard Home, Dashboard, Scanner, Notifier,
-    Anomaly Detector, SNMP Monitor) as hidden background processes.
+    Anomaly Detector, SNMP Monitor, ArpSpoofer) as hidden background processes.
   • Show a system tray icon with live service status in the tooltip.
   • Open the dashboard in the browser from the tray menu.
   • Stop all services cleanly from the tray menu.
@@ -80,6 +80,21 @@ SERVICES = [
         "always_start": False,   # only started if the .exe exists
         "optional_binary": str(ADGUARD_EXE),
     },
+    # ArpSpoofer requires Administrator privileges (raw packet capture via Npcap).
+    # Rather than spawning it directly (which would either silently fail without elevation
+    # or pop a UAC dialog on every launch), we delegate to the Scheduled Task that was
+    # registered with "Highest privileges" by install/register_tasks.ps1.  Elevation was
+    # granted once at task-registration time — no UAC prompt at runtime.
+    #
+    # "schtask_name" signals to _start_service / _stop_service to use
+    #   schtasks /run /tn <name>   instead of subprocess.Popen
+    #   schtasks /end /tn <name>   on stop
+    # The watchdog skips this entry (Task Scheduler owns restart responsibility).
+    {
+        "name": "ArpSpoofer",
+        "schtask_name": "NetworkCompanion-ArpSpoofer",
+        "always_start": True,
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -92,9 +107,38 @@ _lock = threading.Lock()
 CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
+def _run_schtask(action: str, task_name: str) -> bool:
+    """Invoke schtasks /run or /end for a named task.  Returns True on success."""
+    try:
+        result = subprocess.run(
+            ["schtasks", f"/{action}", "/tn", task_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=CREATION_FLAGS,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode(errors="replace").strip()
+            print(f"[!] schtasks /{action} {task_name} failed (rc={result.returncode}): {err}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[!] schtasks /{action} {task_name} error: {e}")
+        return False
+
+
 def _start_service(svc: dict) -> bool:
     """Start a single service. Returns True if launched successfully."""
     name = svc["name"]
+
+    # Scheduled-task services (e.g. ArpSpoofer) are started via schtasks, not Popen.
+    # Task Scheduler owns their lifecycle and restart policy — the watchdog skips them.
+    if "schtask_name" in svc:
+        task_name = svc["schtask_name"]
+        ok = _run_schtask("run", task_name)
+        if ok:
+            print(f"[+] Started {name} via Scheduled Task '{task_name}'")
+        return ok
 
     # Skip optional services whose binary doesn't exist or is inaccessible
     binary = svc.get("optional_binary")
@@ -136,6 +180,13 @@ def start_all():
 
 
 def stop_all():
+    # Stop Scheduled Task services first
+    for svc in SERVICES:
+        if "schtask_name" in svc:
+            task_name = svc["schtask_name"]
+            print(f"[*] Stopping {svc['name']} via Scheduled Task '{task_name}'…")
+            _run_schtask("end", task_name)
+
     with _lock:
         procs = dict(_processes)
     for name, proc in procs.items():
@@ -150,10 +201,36 @@ def stop_all():
         _processes.clear()
 
 
+def _schtask_running(task_name: str) -> bool:
+    """Returns True if the named Scheduled Task is currently in 'Running' state."""
+    try:
+        result = subprocess.run(
+            ["schtasks", "/query", "/tn", task_name, "/fo", "csv", "/nh"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATION_FLAGS,
+            timeout=5,
+        )
+        # CSV output: "TaskName","Next Run Time","Status"
+        # Status is "Running" when active, "Ready" when idle/stopped.
+        output = result.stdout.decode(errors="replace")
+        return "Running" in output
+    except Exception:
+        return False
+
+
 def service_status() -> dict[str, bool]:
     """Returns {name: is_running} for every service."""
+    status: dict[str, bool] = {}
+    # Popen-managed services
     with _lock:
-        return {name: (proc.poll() is None) for name, proc in _processes.items()}
+        for name, proc in _processes.items():
+            status[name] = proc.poll() is None
+    # Scheduled-task services
+    for svc in SERVICES:
+        if "schtask_name" in svc:
+            status[svc["name"]] = _schtask_running(svc["schtask_name"])
+    return status
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +241,10 @@ def _watchdog():
     while True:
         time.sleep(15)
         for svc in SERVICES:
+            # Scheduled Task services are managed (and restarted) by Task Scheduler —
+            # don't interfere with their lifecycle here.
+            if "schtask_name" in svc:
+                continue
             name = svc["name"]
             with _lock:
                 proc = _processes.get(name)

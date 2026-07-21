@@ -36,6 +36,14 @@ _agh = AdGuardClient(_cfg["adguard_url"], _cfg["adguard_username"], _cfg["adguar
 
 STATIC_DIR = Path(__file__).parent / "static"
 SCAN_STALE_AFTER_SECONDS = 150
+# The ARP spoofer writes to spoof_log on arm/disarm/policy_change events, but those can
+# be minutes apart on a quiet network.  We instead look for any spoof_log row written
+# within the last SPOOF_HEARTBEAT_SECONDS — the spoofer logs a 'policy_change' every
+# SPOOF_INTERVAL_SECONDS (2s) whenever a policy actually changes, but on idle networks
+# that may not happen.  A more reliable liveness signal is the relay being *armed* for at
+# least one device: bandwidth_samples are written every 10s, so we fall back to checking
+# for a recent bandwidth_samples row for any armed device if no recent spoof_log entry.
+SPOOF_STALE_AFTER_SECONDS = 60
 
 
 # ---------- Auth helpers ----------
@@ -690,9 +698,35 @@ def status(user: dict = Depends(_require_viewer)):
     with database.get_conn() as conn:
         last_scan = conn.execute("SELECT * FROM scan_log ORDER BY started_at DESC LIMIT 1").fetchone()
         last_snmp = conn.execute("SELECT at FROM router_bandwidth_samples ORDER BY at DESC LIMIT 1").fetchone()
+        # Relay liveness: any spoof_log activity in the last SPOOF_STALE_AFTER_SECONDS
+        # indicates arp_spoofer.py is running.  On idle networks (no armed devices) the
+        # process still logs 'armed'/'disarmed'/'policy_change' events whenever state
+        # changes, but may be silent between them.  So we also accept a recent
+        # bandwidth_samples row for any armed device as proof the relay is alive.
+        last_spoof = conn.execute(
+            "SELECT at FROM spoof_log ORDER BY at DESC LIMIT 1"
+        ).fetchone()
+        last_bw_sample = conn.execute(
+            "SELECT bs.at FROM bandwidth_samples bs "
+            "JOIN devices d ON bs.mac = d.mac "
+            "WHERE d.bandwidth_armed = 1 "
+            "ORDER BY bs.at DESC LIMIT 1"
+        ).fetchone()
 
     scanner_alive = bool(last_scan) and (time.time() - last_scan["finished_at"] < SCAN_STALE_AFTER_SECONDS)
     snmp_alive = bool(last_snmp) and (time.time() - last_snmp["at"] < 120)
+
+    # relay_alive: True if any spoof or bandwidth-sample activity is recent *and*
+    # at least one device is currently armed (if nothing is armed the relay is effectively
+    # idle regardless of whether the process is up, so we surface it as None/"no armed
+    # devices" rather than a misleading green or red).
+    armed = database.get_armed_devices()
+    if not armed:
+        relay_alive = None  # no armed devices — relay status not meaningful
+    else:
+        recent_spoof = bool(last_spoof) and (time.time() - last_spoof["at"] < SPOOF_STALE_AFTER_SECONDS)
+        recent_bw = bool(last_bw_sample) and (time.time() - last_bw_sample["at"] < SPOOF_STALE_AFTER_SECONDS)
+        relay_alive = recent_spoof or recent_bw
 
     agh_ok = None
     if _agh is not None:
@@ -702,11 +736,11 @@ def status(user: dict = Depends(_require_viewer)):
         except Exception:
             agh_ok = False
 
-    armed = database.get_armed_devices()
     cfg = config.load()
     return {
         "scanner_alive": scanner_alive,
         "snmp_alive": snmp_alive,
+        "relay_alive": relay_alive,
         "last_scan_at": last_scan["finished_at"] if last_scan else None,
         "adguard_configured": _agh is not None,
         "adguard_reachable": agh_ok,
