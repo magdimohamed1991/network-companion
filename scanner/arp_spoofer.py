@@ -288,6 +288,11 @@ def _spoof_loop():
                 database.log_spoof_event(mac, "disarmed", "removed from armed list")
                 print(f"[-] Stopped capturing {info['ip']} — ARP restored")
 
+        # Write a heartbeat every cycle so the dashboard's relay_alive check has a
+        # reliable liveness signal that only this process can produce — independent of
+        # arm/disarm events which database.arm_bandwidth_capture() also writes to spoof_log.
+        database.set_notifier_state("arp_spoofer_heartbeat", str(time.time()))
+
         _stop_event.wait(SPOOF_INTERVAL_SECONDS)
 
 

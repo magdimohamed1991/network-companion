@@ -698,25 +698,18 @@ def status(user: dict = Depends(_require_viewer)):
     with database.get_conn() as conn:
         last_scan = conn.execute("SELECT * FROM scan_log ORDER BY started_at DESC LIMIT 1").fetchone()
         last_snmp = conn.execute("SELECT at FROM router_bandwidth_samples ORDER BY at DESC LIMIT 1").fetchone()
-        # Relay liveness: any spoof_log activity in the last SPOOF_STALE_AFTER_SECONDS
-        # indicates arp_spoofer.py is running.  On idle networks (no armed devices) the
-        # process still logs 'armed'/'disarmed'/'policy_change' events whenever state
-        # changes, but may be silent between them.  So we also accept a recent
-        # bandwidth_samples row for any armed device as proof the relay is alive.
-        last_spoof = conn.execute(
-            "SELECT at FROM spoof_log ORDER BY at DESC LIMIT 1"
-        ).fetchone()
-        last_bw_sample = conn.execute(
-            "SELECT bs.at FROM bandwidth_samples bs "
-            "JOIN devices d ON bs.mac = d.mac "
-            "WHERE d.bandwidth_armed = 1 "
-            "ORDER BY bs.at DESC LIMIT 1"
+        # Relay liveness: arp_spoofer.py writes a heartbeat timestamp to notifier_state
+        # on every _spoof_loop iteration (every 2s).  This is the only signal that proves
+        # the process is actually running — arm/disarm events in spoof_log are also written
+        # by the dashboard itself (arm_bandwidth_capture), so they can't be used alone.
+        heartbeat_row = conn.execute(
+            "SELECT value FROM notifier_state WHERE key = 'arp_spoofer_heartbeat'"
         ).fetchone()
 
     scanner_alive = bool(last_scan) and (time.time() - last_scan["finished_at"] < SCAN_STALE_AFTER_SECONDS)
     snmp_alive = bool(last_snmp) and (time.time() - last_snmp["at"] < 120)
 
-    # relay_alive: True if any spoof or bandwidth-sample activity is recent *and*
+    # relay_alive: True if arp_spoofer.py's heartbeat is recent *and*
     # at least one device is currently armed (if nothing is armed the relay is effectively
     # idle regardless of whether the process is up, so we surface it as None/"no armed
     # devices" rather than a misleading green or red).
@@ -724,9 +717,8 @@ def status(user: dict = Depends(_require_viewer)):
     if not armed:
         relay_alive = None  # no armed devices — relay status not meaningful
     else:
-        recent_spoof = bool(last_spoof) and (time.time() - last_spoof["at"] < SPOOF_STALE_AFTER_SECONDS)
-        recent_bw = bool(last_bw_sample) and (time.time() - last_bw_sample["at"] < SPOOF_STALE_AFTER_SECONDS)
-        relay_alive = recent_spoof or recent_bw
+        hb = heartbeat_row["value"] if heartbeat_row else None
+        relay_alive = bool(hb) and (time.time() - float(hb) < SPOOF_STALE_AFTER_SECONDS)
 
     agh_ok = None
     if _agh is not None:

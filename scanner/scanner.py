@@ -267,26 +267,34 @@ def run_one_scan(subnet_override: list[str] | None = None):
     ping_sweep(all_hosts)
     arp_pairs = read_arp_table()
 
-    seen_macs = set()
-    new_count = 0
-    for entry in arp_pairs:
+    def _process_entry(entry: dict) -> tuple[str, bool]:
+        """Resolve hostname + upsert one device. Returns (mac, is_new).
+        Runs in a thread so NetBIOS queries (4s timeout each) don't serialize."""
         ip, ipv6, mac = entry["ip"], entry["ipv6"], entry["mac"]
-        # Try hostname sources in order; first non-None wins.
         hostname = None
         if ip:
             hostname = (
-                resolve_hostname(ip)          # 1. Reverse-DNS / router PTR
-                or resolve_mdns(ip)           # 2. mDNS cache (populated passively)
-                or resolve_netbios(ip)        # 3. NetBIOS direct query
+                resolve_hostname(ip)    # 1. Reverse-DNS / router PTR
+                or resolve_mdns(ip)     # 2. mDNS cache (populated passively)
+                or resolve_netbios(ip)  # 3. NetBIOS direct query (slow — must be last)
             )
         vendor = lookup_vendor(mac)
         device_type = lookup_device_type(mac, hostname, ip)
         is_new = database.upsert_device(mac, ip, ipv6, hostname, vendor, device_type)
-        seen_macs.add(mac)
         if is_new:
-            new_count += 1
             label = hostname or vendor or mac
             print(f"[+] New device: {label} — {ip} ({mac})")
+        return mac, is_new
+
+    seen_macs = set()
+    new_count = 0
+    # Use the same worker pool size as ping_sweep — NetBIOS has a 4s timeout per device,
+    # so running serially with 14 devices could add 30+ seconds to each scan cycle.
+    with ThreadPoolExecutor(max_workers=PING_WORKERS) as pool:
+        for mac, is_new in pool.map(_process_entry, arp_pairs):
+            seen_macs.add(mac)
+            if is_new:
+                new_count += 1
 
     database.mark_stale_devices_offline(seen_macs)
     database.log_scan(started, time.time(), len(seen_macs), subnets_label)
