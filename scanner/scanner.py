@@ -8,6 +8,13 @@ Npcap, no admin rights, no raw sockets, nothing that touches other devices' traf
 Runs forever, re-scanning every SCAN_INTERVAL_SECONDS, so this is one of the two
 long-running processes (the other is arp_spoofer.py) that install/*.ps1 sets up as a
 Windows service.
+
+Hostname resolution strategy (tried in order, first non-None wins):
+  1. Reverse-DNS / PTR   — fast, works when the router runs a local DNS server
+  2. NetBIOS (nbtstat)   — queries the device directly; works for Windows PCs and many
+                           IoT devices even when there's no router DNS support
+  3. mDNS / Bonjour      — passive listener via zeroconf; catches Apple devices and
+                           modern IoT that advertise a real .local hostname
 """
 
 import argparse
@@ -29,6 +36,73 @@ from oui_vendors import lookup_vendor, lookup_device_type
 SCAN_INTERVAL_SECONDS = 60
 PING_TIMEOUT_MS = 300
 PING_WORKERS = 64
+
+# ---------------------------------------------------------------------------
+# mDNS cache — populated by the background ZeroconfListener; read by the scan
+# ---------------------------------------------------------------------------
+_mdns_names: dict[str, str] = {}   # ip -> .local hostname
+
+try:
+    from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf
+
+    class _ZeroconfListener:
+        """Passive listener that caches IP→hostname mappings from mDNS announcements."""
+
+        def __init__(self, zc: "Zeroconf"):
+            self._zc = zc
+
+        def _register(self, name: str, info: "ServiceInfo | None") -> None:
+            if info is None:
+                return
+            hostname = info.server  # e.g. "mydevice.local."
+            if not hostname:
+                return
+            hostname = hostname.rstrip(".")
+            for addr_bytes in info.addresses:
+                try:
+                    ip = socket.inet_ntoa(addr_bytes)
+                    _mdns_names[ip] = hostname
+                except OSError:
+                    pass
+
+        def add_service(self, zc: "Zeroconf", svc_type: str, name: str) -> None:
+            info = zc.get_service_info(svc_type, name)
+            self._register(name, info)
+
+        def update_service(self, zc: "Zeroconf", svc_type: str, name: str) -> None:
+            info = zc.get_service_info(svc_type, name)
+            self._register(name, info)
+
+        def remove_service(self, zc: "Zeroconf", svc_type: str, name: str) -> None:
+            pass
+
+    def _start_mdns_listener() -> None:
+        """Start a background Zeroconf browser for the most common service types."""
+        zc = Zeroconf()
+        listener = _ZeroconfListener(zc)
+        # Browse the service types most commonly used by consumer devices
+        for svc in (
+            "_http._tcp.local.",
+            "_https._tcp.local.",
+            "_googlecast._tcp.local.",
+            "_airplay._tcp.local.",
+            "_raop._tcp.local.",
+            "_homekit._tcp.local.",
+            "_matter._tcp.local.",
+            "_printer._tcp.local.",
+            "_ipp._tcp.local.",
+            "_smb._tcp.local.",
+            "_device-info._tcp.local.",
+        ):
+            ServiceBrowser(zc, svc, listener)
+        # Keep the Zeroconf instance alive; it runs its own daemon threads
+        # so we don't need to join it.
+
+    _start_mdns_listener()
+    print("[i] mDNS/Bonjour listener started (zeroconf)")
+except ImportError:
+    print("[!] zeroconf not installed — mDNS hostname resolution disabled. "
+          "Run: pip install zeroconf==0.132.2")
 
 
 def get_all_local_subnets() -> list[str]:
@@ -132,6 +206,50 @@ def resolve_hostname(ip: str, timeout: float = 0.5) -> str | None:
         return None
 
 
+def resolve_netbios(ip: str) -> str | None:
+    """
+    Query the device directly via NetBIOS name service (nbtstat -A <ip>).
+
+    Looks for the row with the <20> suffix (Workstation Service), which is the
+    machine name that Windows registers and most NetBIOS-aware IoT devices
+    announce.  Falls back to any <00> UNIQUE entry if <20> isn't present.
+
+    Returns None on timeout, error, or if the device doesn't speak NetBIOS.
+    Typical round-trip is well under 2 seconds on a local LAN.
+    """
+    try:
+        result = subprocess.run(
+            ["nbtstat", "-A", ip],
+            capture_output=True, text=True, timeout=4, errors="ignore",
+        )
+        output = result.stdout
+        # nbtstat -A output has rows like:
+        #   MYMACHINE      <20>  UNIQUE      Registered
+        #   MYMACHINE      <00>  UNIQUE      Registered
+        # Prefer the <20> (Workstation Service) entry; it's the "real" hostname.
+        for suffix in ("<20>", "<00>"):
+            for line in output.splitlines():
+                if suffix in line and "UNIQUE" in line:
+                    # Name occupies the first whitespace-delimited field
+                    name = line.split()[0].strip()
+                    if name:
+                        return name
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+def resolve_mdns(ip: str) -> str | None:
+    """
+    Look up a cached mDNS / Bonjour hostname for this IP.
+
+    The cache is populated passively by the background Zeroconf listener that
+    starts at module load time.  If zeroconf isn't installed the cache is always
+    empty and this always returns None.
+    """
+    return _mdns_names.get(ip)
+
+
 def run_one_scan(subnet_override: list[str] | None = None):
     started = time.time()
 
@@ -153,7 +271,14 @@ def run_one_scan(subnet_override: list[str] | None = None):
     new_count = 0
     for entry in arp_pairs:
         ip, ipv6, mac = entry["ip"], entry["ipv6"], entry["mac"]
-        hostname = resolve_hostname(ip) if ip else None
+        # Try hostname sources in order; first non-None wins.
+        hostname = None
+        if ip:
+            hostname = (
+                resolve_hostname(ip)          # 1. Reverse-DNS / router PTR
+                or resolve_mdns(ip)           # 2. mDNS cache (populated passively)
+                or resolve_netbios(ip)        # 3. NetBIOS direct query
+            )
         vendor = lookup_vendor(mac)
         device_type = lookup_device_type(mac, hostname, ip)
         is_new = database.upsert_device(mac, ip, ipv6, hostname, vendor, device_type)

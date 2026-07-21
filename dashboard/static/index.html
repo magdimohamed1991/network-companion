@@ -550,7 +550,20 @@ function deviceTypeLabel(d){
 function deviceShortType(d){
   if(d.device_type)return _TYPE_LABELS[d.device_type]||d.device_type;
   if(d.vendor)return d.vendor;
+  if(isRandomisedMac(d.mac))return'<span style="color:var(--amber)" title="Locally-administered / randomised MAC — privacy feature">🔒 Private MAC</span>';
   return'<span style="color:var(--text-faint)">Unknown</span>';
+}
+
+/**
+ * Returns true when the MAC address has the locally-administered bit set (bit 1 of
+ * the first octet).  This is the standard indicator for OS-level MAC randomisation
+ * used by iOS, Android, Windows 10+, and ChromeOS on modern hardware.
+ * Examples of affected first octets (hex): 02, 06, 0a, 0e, 12, … da, fa, etc.
+ */
+function isRandomisedMac(mac){
+  if(!mac)return false;
+  const firstOctet=parseInt(mac.split(':')[0]||mac.split('-')[0],16);
+  return!isNaN(firstOctet)&&(firstOctet&0x02)!==0;
 }
 
 function sparklinePath(samples,key,width,height){
@@ -574,6 +587,8 @@ async function refreshStatus(){
     const pills=document.getElementById('statusPills');pills.innerHTML='';
     pills.appendChild(makePill(s.scanner_alive?'ok':'bad',s.scanner_alive?'scanner live':'scanner down'));
     if(s.snmp_alive!==undefined)pills.appendChild(makePill(s.snmp_alive?'ok':'warn',s.snmp_alive?'snmp live':'snmp inactive'));
+    // relay_alive: null = no armed devices (omit pill), true/false = armed + alive/dead
+    if(s.relay_alive!==null&&s.relay_alive!==undefined)pills.appendChild(makePill(s.relay_alive?'ok':'bad',s.relay_alive?'relay live':'relay down'));
     if(s.adguard_configured){
       pills.appendChild(makePill(s.adguard_reachable?'ok':'bad',s.adguard_reachable?'AdGuard ✓':'AdGuard ✗'));
       if(s.adguard_reachable){try{const stats=await api('/api/adguard/stats');if(stats)pills.appendChild(makePill('warn',`${stats.num_blocked_filtering??0}/${stats.num_dns_queries??0} blocked`));}catch(e){}}
@@ -694,7 +709,13 @@ function renderDeviceRow(d){
   const quotaPct=d.monthly_quota_mb?Math.min(100,(d.usage_month_total_mb/d.monthly_quota_mb)*100):null;
   const quotaClass=quotaPct===null?'':quotaPct>=100?'over':quotaPct>=80?'warn':'';
   const isExpanded=expandedMac===d.mac;
-  const displayName=escapeHtml(d.friendly_name||d.hostname||d.mac);
+  // If no name resolved and the MAC has the locally-administered (randomised) bit set,
+  // show a private-address nudge rather than the raw MAC or a bare "Unknown".
+  const hasName=!!(d.friendly_name||d.hostname);
+  const isRandomMac=isRandomisedMac(d.mac);
+  const displayName=hasName
+    ?escapeHtml(d.friendly_name||d.hostname)
+    :(isRandomMac?'Private address — rename me':escapeHtml(d.mac));
   const tags=(d.tags||'').split(',').filter(t=>t);
   return`<tr class="device-row${d.is_online?'':' offline'}${isExpanded?' expanded':''}" data-mac="${d.mac}" onclick="toggleExpand('${d.mac}')">
     <td class="td-status no-pad" style="padding:0 0 0 14px"><span class="led-dot${d.is_online?' online-led':''}"></span></td>
