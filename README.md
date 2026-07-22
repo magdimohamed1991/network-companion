@@ -11,7 +11,7 @@ no Lovable dependency.
 |---|---|---|
 | `scanner/scanner.py` | Ping sweep + ARP table → device list | Native Windows Python, no admin needed |
 | `scanner/arp_spoofer.py` | ARP-spoof relay: bandwidth capture + quota/schedule enforcement | Native Windows Python, **Administrator** |
-| AdGuard Home | DNS resolver for your LAN → per-device query log (sites visited) | Native Windows service (separate install, not part of this repo) |
+| AdGuard Home | DNS resolver for your LAN → per-device query log (sites visited) | Managed child process (started by tray launcher from `adguard/AdGuardHome.exe`) |
 | `dashboard/` | FastAPI backend + single-file HTML frontend, ties it all together | Native Windows Python |
 | `maintenance.py` | Daily data retention: rolls up old bandwidth samples, prunes old logs | Native Windows Python, runs once/day |
 | `notifier.py` | Watches for new devices, watchdog events, and quota crossings → Windows toast / Telegram | Native Windows Python |
@@ -97,14 +97,25 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 already had it enabled, this step turns it back off — see the Phase 3 architecture note
 above for why.)
 
-### 4. AdGuard Home (native Windows service — separate download, not part of this repo)
-1. Download the Windows build from AdGuard Home's GitHub releases, extract it somewhere
-   permanent (e.g. `C:\AdGuardHome\`).
-2. Open an Administrator terminal in that folder and run `AdGuardHome.exe`. It'll start
-   on port 3000 and print a URL — open it in your browser and complete the setup wizard
-   (pick an admin username/password; **you'll need these for config.json in step 6**).
-3. Back in the admin terminal: `AdGuardHome.exe -s install` — registers it as a proper
-   Windows service so it survives reboots without you doing anything.
+### 4. AdGuard Home (bundled in the `adguard/` folder — no separate install)
+1. Download the Windows build from [AdGuard Home's GitHub releases](https://github.com/AdguardTeam/AdGuardHome/releases),
+   and extract `AdGuardHome.exe` (and any accompanying files) into **`network-companion/adguard/`**.
+   This exact path matters — `tray_launcher.py` (NetworkCompanion.exe) looks for
+   `adguard/AdGuardHome.exe` relative to the project root and starts it as a managed
+   background process. If the file isn't there, AdGuard is silently skipped and DNS
+   tracking won't work, but everything else still runs.
+2. Run it once manually to complete initial setup:
+   ```
+   adguard\AdGuardHome.exe -w adguard
+   ```
+   It starts on port 3000 — open `http://localhost:3000` in your browser and complete
+   the setup wizard (pick an admin username/password; **you'll need these for config.json
+   in step 6**). Press Ctrl+C when done; `tray_launcher.py` takes it from here.
+
+> **Upgrading from the old install instructions?** If you previously ran
+> `AdGuardHome.exe -s install` to register AdGuard as a Windows service, run
+> `AdGuardHome.exe -s uninstall` first (in an Administrator terminal) before moving the
+> binary here. Leaving the service registered means two copies would race for port 3000.
 
 ### 5. Point your router's DNS at this machine
 In your router's admin page (usually `http://192.168.1.1` or similar), find DHCP
@@ -143,10 +154,25 @@ before it exits.
 cd network-companion\install
 .\register_tasks.ps1
 ```
-This registers all six as Scheduled Tasks: the first five start at login and restart
-on crash; maintenance runs once daily at 4am. Read the comment block at the top of
-`register_tasks.ps1` for the optional step to make the login-triggered ones run even
-when you're logged out entirely.
+This registers **two** Scheduled Tasks: `NetworkCompanion-ArpSpoofer` (starts at login
+with elevated rights — the only service that needs them) and `NetworkCompanion-Maintenance`
+(runs once daily at 4am).
+
+All other services (Dashboard, Scanner, Notifier, SNMP Monitor, Anomaly Detector, and
+AdGuard Home) are started directly by **NetworkCompanion.exe** (the tray launcher) —
+double-click it to start everything. It also watches for crashes and restarts services
+automatically. Its startup log is written to `tray_launcher.log` in the project root —
+check there first if something isn't starting.
+
+> **If you previously ran `register_tasks.ps1` from an older version**, remove the now-
+> redundant at-login tasks before re-running:
+> ```powershell
+> foreach ($t in @("NetworkCompanion-Scanner","NetworkCompanion-Dashboard",
+>     "NetworkCompanion-Notifier","NetworkCompanion-SNMPMonitor",
+>     "NetworkCompanion-AnomalyDetector")) {
+>     Unregister-ScheduledTask -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue
+> }
+> ```
 
 ---
 
@@ -216,8 +242,10 @@ nothing keeps refreshing the forged entries once the process is gone.
   almost always the wrong network interface. Run `--list-interfaces` and pass your real
   Wi-Fi/Ethernet adapter explicitly with `--iface`; avoid anything named for WSL,
   Hyper-V, Docker, or a VPN.
-- **Sites-visited panel says AdGuard unreachable** — confirm `AdGuardHome.exe` service is
-  running (`services.msc`) and that `config.json`'s URL/credentials match.
+- **Sites-visited panel says AdGuard unreachable** — confirm `adguard/AdGuardHome.exe`
+  is present and running (check `tray_launcher.log` for a `[!] AdGuard Home: binary not
+  found` line). If it's running but unreachable, confirm `config.json`'s URL/credentials
+  match what you set in the AdGuard setup wizard.
 - **Devices only show for this PC, not the whole house** — step 5 (router DNS) wasn't
   completed, or the router cached the old DNS setting; reboot the router after changing it.
 - **Scheduled tasks aren't running** — `Get-ScheduledTask -TaskName "NetworkCompanion-*"`

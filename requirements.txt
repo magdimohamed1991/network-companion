@@ -6,7 +6,12 @@ requests==2.32.3
 
 # ARP-spoofing bandwidth capture (scanner.py itself needs nothing beyond stdlib)
 scapy==2.6.1
-pysnmp==4.4.12
+# pysnmp 4.4.12 was the last release from the original maintainer and is no longer
+# maintained. Updated to 6.x (maintained by LeXtudio Inc.). The synchronous hlapi
+# (next(getCmd(...))) was deprecated in 6.x — pysnmp-sync-adapter restores it so
+# snmp_monitor.py works without an async rewrite.
+pysnmp==6.2.6
+pysnmp-sync-adapter==1.0.2
 
 # Notifications (Phase 2) — Telegram just uses requests, already listed above
 win11toast==0.36.3

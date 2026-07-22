@@ -79,7 +79,23 @@ def _alert(title: str, message: str, mac: str, rule: str, auto_block: bool = Fal
     print(f"[!] ANOMALY [{rule}] {title}: {message}")
     notifications.notify(f"⚠️ {title}", message)
     if auto_block:
-        database.set_quota_action(mac, "block")
+        # Arm the device first so the relay can enforce the block.
+        # If it's already armed this is a no-op (arm_bandwidth_capture uses UPDATE).
+        devices = {d["mac"]: d for d in database.get_all_devices()}
+        dev = devices.get(mac, {})
+        if not dev.get("bandwidth_armed"):
+            router_ip = dev.get("router_ip", "")
+            if not router_ip:
+                try:
+                    from netutils import get_default_gateway
+                    router_ip = get_default_gateway() or ""
+                except Exception:
+                    router_ip = ""
+            if router_ip:
+                database.arm_bandwidth_capture(mac, router_ip)
+        # Set force_blocked — this is independent of quota, checked first in
+        # get_effective_policy(). Cleared only by emergency unblock or admin action.
+        database.set_force_blocked(mac, True)
         notifications.notify("🔒 Auto-blocked", f"{message} — device has been blocked pending review.")
         print(f"[!] Auto-blocked {mac} due to anomaly rule {rule}")
 

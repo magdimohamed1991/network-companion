@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS devices (
     -- Phase 3: what to do once monthly_quota_mb is exceeded. 'none' = just show it in the
     -- dashboard (Phase 1/2 behavior). 'throttle'/'block' require the relay (see arp_spoofer.py).
     quota_action        TEXT NOT NULL DEFAULT 'none',   -- 'none' | 'throttle' | 'block'
-    throttle_rate_kbps  INTEGER
+    throttle_rate_kbps  INTEGER,
+    -- Anomaly auto-block / admin manual block: overrides quota and schedule, takes
+    -- priority over everything else. Cleared by emergency-unblock or admin action.
+    force_blocked       INTEGER NOT NULL DEFAULT 0
 );
 
 -- Phase 3: scheduled access windows (e.g. "block 10pm-7am"). A device can have multiple
@@ -158,7 +161,8 @@ CREATE TABLE IF NOT EXISTS auth_users (
     username        TEXT UNIQUE NOT NULL,
     password_hash   TEXT NOT NULL,   -- bcrypt hash
     role            TEXT NOT NULL DEFAULT 'viewer',  -- 'admin' | 'viewer'
-    created_at      REAL NOT NULL
+    created_at      REAL NOT NULL,
+    must_change_password INTEGER NOT NULL DEFAULT 0  -- forces password change on next login
 );
 """
 
@@ -187,6 +191,21 @@ def _migrate(conn):
     existing = {row[1] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
     if "device_type" not in existing:
         conn.execute("ALTER TABLE devices ADD COLUMN device_type TEXT")
+    if "tags" not in existing:
+        conn.execute("ALTER TABLE devices ADD COLUMN tags TEXT")
+    if "ipv6" not in existing:
+        conn.execute("ALTER TABLE devices ADD COLUMN ipv6 TEXT")
+    if "quota_action" not in existing:
+        conn.execute("ALTER TABLE devices ADD COLUMN quota_action TEXT NOT NULL DEFAULT 'none'")
+    if "throttle_rate_kbps" not in existing:
+        conn.execute("ALTER TABLE devices ADD COLUMN throttle_rate_kbps INTEGER")
+    if "force_blocked" not in existing:
+        conn.execute("ALTER TABLE devices ADD COLUMN force_blocked INTEGER NOT NULL DEFAULT 0")
+
+    # auth_users migrations
+    existing_users = {row[1] for row in conn.execute("PRAGMA table_info(auth_users)").fetchall()}
+    if existing_users and "must_change_password" not in existing_users:
+        conn.execute("ALTER TABLE auth_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
 
 
 def upsert_device(mac: str, ip: str, ipv6: str | None, hostname: str | None, vendor: str | None,
@@ -214,7 +233,10 @@ def upsert_device(mac: str, ip: str, ipv6: str | None, hostname: str | None, ven
         else:
             was_offline = row["is_online"] == 0
             # Only update hostname/vendor/device_type if the new value is not None
-            # (COALESCE keeps existing good value when new scan returns nothing)
+            # (COALESCE keeps existing good value when new scan returns nothing).
+            # Also update friendly_name when it is still NULL and we now have a hostname
+            # or vendor to show — this handles devices that had no name on first insert
+            # but whose hostname resolved on a later scan.
             conn.execute(
                 """UPDATE devices SET
                    ip = ?,
@@ -223,9 +245,13 @@ def upsert_device(mac: str, ip: str, ipv6: str | None, hostname: str | None, ven
                    is_online = 1,
                    hostname = COALESCE(?, hostname),
                    vendor = COALESCE(?, vendor),
-                   device_type = COALESCE(?, device_type)
+                   device_type = COALESCE(?, device_type),
+                   friendly_name = CASE
+                       WHEN friendly_name IS NULL THEN COALESCE(?, ?, friendly_name)
+                       ELSE friendly_name
+                   END
                    WHERE mac = ?""",
-                (ip, ipv6, now, hostname, vendor, device_type, mac),
+                (ip, ipv6, now, hostname, vendor, device_type, hostname, vendor, mac),
             )
             if was_offline:
                 conn.execute(
@@ -440,6 +466,21 @@ def set_quota_action(mac: str, action: str, throttle_rate_kbps: int | None = Non
         )
 
 
+def set_force_blocked(mac: str, blocked: bool):
+    """Force-block or unblock a device, independently of quota and schedule.
+
+    force_blocked=1 takes the highest priority in get_effective_policy() — the device is
+    blocked regardless of what quota_action or schedule rules say.  Used by the anomaly
+    auto-block path and the 'Force block' dashboard button.  Cleared by the emergency
+    unblock action or an admin explicitly setting it to False.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE devices SET force_blocked = ? WHERE mac = ?",
+            (1 if blocked else 0, mac),
+        )
+
+
 def add_schedule_rule(mac: str, label: str, days_of_week: str, start_minute: int, end_minute: int,
                        action: str = "block", throttle_rate_kbps: int | None = None) -> int:
     if action not in ("block", "throttle"):
@@ -488,6 +529,10 @@ def get_effective_policy(mac: str, now=None) -> dict:
         return {"action": "none", "throttle_rate_kbps": None, "reason": "unknown device"}
 
     best = {"action": "none", "throttle_rate_kbps": None, "reason": "no restriction"}
+
+    # --- force_blocked: highest priority, independent of quota and schedule ---
+    if dev["force_blocked"]:
+        return {"action": "block", "throttle_rate_kbps": None, "reason": "force-blocked (anomaly or admin)"}
 
     # --- Quota check ---
     if dev["quota_action"] != "none" and dev["monthly_quota_mb"]:
@@ -550,10 +595,15 @@ def disarm_all_devices(detail: str = "emergency unblock") -> int:
     """Kill switch: disarm every currently-armed device at once. arp_spoofer.py picks this
     up on its next cycle and restores real ARP for all of them — the most complete way to
     guarantee full connectivity is restored, since it removes this system from the traffic
-    path entirely rather than depending on policy logic to behave."""
+    path entirely rather than depending on policy logic to behave.
+    Also clears force_blocked so anomaly-blocked devices are fully unblocked."""
     armed = get_armed_devices()
     for dev in armed:
         disarm_bandwidth_capture(dev["mac"], detail=detail)
+    # Clear force_blocked on all devices (including untracked ones) so a stale block
+    # can't silently re-apply the next time someone arms a device.
+    with get_conn() as conn:
+        conn.execute("UPDATE devices SET force_blocked = 0 WHERE force_blocked = 1")
     return len(armed)
 
 
@@ -696,18 +746,27 @@ def get_user_by_username(username: str) -> dict | None:
 
 def get_all_users() -> list[dict]:
     with get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT id, username, role, created_at FROM auth_users").fetchall()]
+        return [dict(r) for r in conn.execute("SELECT id, username, role, created_at, must_change_password FROM auth_users").fetchall()]
 
 
-def create_user(username: str, password_hash: str, role: str = "viewer") -> int:
+def create_user(username: str, password_hash: str, role: str = "viewer",
+                must_change_password: bool = False) -> int:
     if role not in ("admin", "viewer"):
         raise ValueError(f"invalid role: {role}")
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO auth_users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-            (username, password_hash, role, time.time()),
+            "INSERT INTO auth_users (username, password_hash, role, created_at, must_change_password) VALUES (?, ?, ?, ?, ?)",
+            (username, password_hash, role, time.time(), 1 if must_change_password else 0),
         )
         return cur.lastrowid
+
+
+def set_must_change_password(username: str, value: bool):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE auth_users SET must_change_password = ? WHERE username = ?",
+            (1 if value else 0, username),
+        )
 
 
 def update_user_password(username: str, password_hash: str):

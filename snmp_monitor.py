@@ -15,7 +15,13 @@ import config
 import database
 
 try:
-    from pysnmp.hlapi import *
+    # pysnmp 6.x deprecated the synchronous hlapi in favour of asyncio.
+    # pysnmp-sync-adapter restores the familiar synchronous interface so we can
+    # keep using next(getCmd(...)) without an async rewrite.
+    try:
+        from pysnmp_sync_adapter.hlapi import *  # type: ignore
+    except ImportError:
+        from pysnmp.hlapi import *  # fallback: works on 4.x or if adapter not installed
 except ImportError:
     print("[!] PySNMP not installed. SNMP monitoring disabled.")
     sys.exit(0)

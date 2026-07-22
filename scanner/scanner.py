@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import database
+import config as _config
 from netutils import get_local_ip
 from oui_vendors import lookup_vendor, lookup_device_type
 
@@ -250,6 +251,75 @@ def resolve_mdns(ip: str) -> str | None:
     return _mdns_names.get(ip)
 
 
+def _enrich_from_adguard():
+    """Pull client hostnames from AdGuard Home's query log and update devices that still
+    have no friendly_name. Also uses AdGuard's /control/clients for any registered names.
+    This is the best source for devices with randomized MACs — they won't have DNS PTR
+    records or NetBIOS names, but AdGuard may have resolved their hostname from mDNS/rDNS
+    when it saw their queries."""
+    try:
+        cfg = _config.load()
+        url = cfg.get("adguard_url", "").rstrip("/")
+        username = cfg.get("adguard_username", "")
+        password = cfg.get("adguard_password", "")
+        if not url or not username:
+            return
+
+        import requests
+        auth = (username, password)
+
+        # Build ip -> hostname map from query log client_info
+        ip_to_name: dict[str, str] = {}
+        try:
+            resp = requests.get(f"{url}/control/querylog?limit=1000", auth=auth, timeout=5)
+            if resp.ok:
+                for entry in resp.json().get("data", []):
+                    client_ip = entry.get("client")
+                    # AdGuard resolves client hostnames via rDNS/RDAP
+                    ci = entry.get("client_info") or {}
+                    name = ci.get("name") or ""
+                    if client_ip and name and name != client_ip:
+                        ip_to_name[client_ip] = name
+        except Exception:
+            pass
+
+        # Also check /control/clients for manually configured client names
+        try:
+            resp = requests.get(f"{url}/control/clients", auth=auth, timeout=5)
+            if resp.ok:
+                data = resp.json()
+                for c in (data.get("clients") or []):
+                    name = c.get("name", "")
+                    for ident in c.get("ids", []):
+                        # IDs can be IPs or MACs
+                        if name and name != ident:
+                            ip_to_name[ident] = name
+        except Exception:
+            pass
+
+        if not ip_to_name:
+            return
+
+        # Match against devices with no friendly_name, updating via ip or mac
+        with database.get_conn() as conn:
+            no_name_devs = conn.execute(
+                "SELECT mac, ip FROM devices WHERE friendly_name IS NULL OR friendly_name = ''"
+            ).fetchall()
+            updated = 0
+            for dev in no_name_devs:
+                name = ip_to_name.get(dev["ip"]) or ip_to_name.get(dev["mac"])
+                if name:
+                    conn.execute(
+                        "UPDATE devices SET friendly_name = ?, hostname = COALESCE(hostname, ?) WHERE mac = ?",
+                        (name, name, dev["mac"]),
+                    )
+                    updated += 1
+            if updated:
+                print(f"[i] AdGuard enrichment: updated {updated} device name(s)")
+    except Exception as e:
+        print(f"[!] AdGuard enrichment failed: {e}")
+
+
 def run_one_scan(subnet_override: list[str] | None = None):
     started = time.time()
 
@@ -300,6 +370,7 @@ def run_one_scan(subnet_override: list[str] | None = None):
     database.log_scan(started, time.time(), len(seen_macs), subnets_label)
     print(f"[i] Scan complete: {len(seen_macs)} devices online, {new_count} new. "
           f"({time.time() - started:.1f}s)")
+    _enrich_from_adguard()
 
 
 def main():

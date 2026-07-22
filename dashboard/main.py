@@ -131,16 +131,18 @@ def _ensure_initial_admin():
     if database.count_admins() > 0:
         return
     password = cfg.get("auth_initial_admin_password", "")
+    must_change = False
     if not password:
         password = "admin"
+        must_change = True
         print("[!] Auth enabled but auth_initial_admin_password not set in config.json.")
-        print("[!] Default admin password is 'admin' — CHANGE IT immediately via the dashboard.")
+        print("[!] Default admin password is 'admin' — a password change will be required on first login.")
     bcrypt = _load_bcrypt()
     if bcrypt is None:
         print("[!] bcrypt not installed — cannot create initial admin. Run: pip install bcrypt")
         return
     pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    database.create_user("admin", pw_hash, "admin")
+    database.create_user("admin", pw_hash, "admin", must_change_password=must_change)
     print("[i] Created initial admin user. Change the password in the dashboard.")
 
 
@@ -183,6 +185,10 @@ class ChangePasswordRequest(BaseModel):
     username: str
     new_password: str
 
+class ChangeOwnPasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
 class AdGuardConfigRequest(BaseModel):
     adguard_url: str
     adguard_username: str
@@ -203,7 +209,7 @@ def startup():
 def login(form: OAuth2PasswordRequestForm = Depends()):
     cfg = config.load()
     if not cfg.get("auth_enabled"):
-        return {"access_token": "", "token_type": "bearer", "role": "admin"}
+        return {"access_token": "", "token_type": "bearer", "role": "admin", "must_change_password": False}
 
     bcrypt = _load_bcrypt()
     if bcrypt is None:
@@ -216,12 +222,21 @@ def login(form: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = _create_token(user["username"], user["role"])
-    return {"access_token": token, "token_type": "bearer", "role": user["role"]}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "role": user["role"],
+        "must_change_password": bool(user.get("must_change_password")),
+    }
 
 
 @app.get("/api/auth/me")
-def auth_me(user: dict = Depends(_require_viewer)):
-    return {"username": user["username"], "role": user["role"]}
+def auth_me(user: dict | None = Depends(_current_user)):
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    db_user = database.get_user_by_username(user["username"]) if database else None
+    must_change = bool(db_user.get("must_change_password")) if db_user else False
+    return {"username": user["username"], "role": user["role"], "must_change_password": must_change}
 
 
 @app.get("/api/auth/users")
@@ -255,6 +270,31 @@ def change_password(body: ChangePasswordRequest, user: dict = Depends(_require_a
     return {"ok": True}
 
 
+@app.post("/api/auth/me/change_password")
+def change_own_password(body: ChangeOwnPasswordRequest, user: dict | None = Depends(_current_user)):
+    """Self-serve password change. The only endpoint accessible with must_change_password=True.
+    Verifies the current password, updates the hash, and clears the must_change_password flag."""
+    cfg = config.load()
+    if not cfg.get("auth_enabled"):
+        raise HTTPException(400, "Auth not enabled")
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    bcrypt = _load_bcrypt()
+    if bcrypt is None:
+        raise HTTPException(500, "bcrypt not installed")
+    db_user = database.get_user_by_username(user["username"])
+    if not db_user:
+        raise HTTPException(404, "User not found")
+    if not bcrypt.checkpw(body.current_password.encode(), db_user["password_hash"].encode()):
+        raise HTTPException(401, "Current password is incorrect")
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "New password must be at least 8 characters")
+    pw_hash = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
+    database.update_user_password(user["username"], pw_hash)
+    database.set_must_change_password(user["username"], False)
+    return {"ok": True}
+
+
 @app.delete("/api/auth/users/{username}")
 def delete_user(username: str, user: dict = Depends(_require_admin)):
     if username == user["username"]:
@@ -271,16 +311,60 @@ def delete_user(username: str, user: dict = Depends(_require_admin)):
 
 # ---------- Devices (read — viewer) ----------
 
+def _adguard_ip_names() -> dict[str, str]:
+    """Return {ip: name} from AdGuard's query log client_info — best-effort, returns {} on any error.
+    Used to enrich device display names for devices with randomized MACs that have no hostname."""
+    if _agh is None:
+        return {}
+    try:
+        ip_to_name: dict[str, str] = {}
+        data = _agh.query_log(limit=1000)
+        for entry in data.get("data", []):
+            client_ip = entry.get("client")
+            ci = entry.get("client_info") or {}
+            name = ci.get("name") or ""
+            if client_ip and name and name != client_ip:
+                ip_to_name[client_ip] = name
+        # Also check configured clients
+        try:
+            import requests as _req
+            cfg = config.load()
+            resp = _req.get(
+                f"{cfg['adguard_url'].rstrip('/')}/control/clients",
+                auth=(cfg["adguard_username"], cfg["adguard_password"]),
+                timeout=5,
+            )
+            if resp.ok:
+                for c in (resp.json().get("clients") or []):
+                    name = c.get("name", "")
+                    for ident in c.get("ids", []):
+                        if name and name != ident:
+                            ip_to_name[ident] = name
+        except Exception:
+            pass
+        return ip_to_name
+    except Exception:
+        return {}
+
+
 @app.get("/api/devices")
 def list_devices(user: dict = Depends(_require_viewer)):
     devices = database.get_all_devices()
     month_start = database.get_month_start_ts()
+    agh_names = _adguard_ip_names()  # ip/mac -> name from AdGuard, best-effort
     for d in devices:
         sent, received = database.get_usage_since(d["mac"], month_start)
         d["usage_month_bytes_sent"] = sent
         d["usage_month_bytes_received"] = received
         d["usage_month_total_mb"] = round((sent + received) / (1024 * 1024), 2)
         d["effective_policy"] = database.get_effective_policy(d["mac"]) if d["bandwidth_armed"] else None
+        # Enrich friendly_name on the fly from AdGuard if the DB has no name yet
+        if not d.get("friendly_name") and not d.get("hostname"):
+            agh_name = agh_names.get(d.get("ip") or "") or agh_names.get(d["mac"] or "")
+            if agh_name:
+                d["friendly_name"] = agh_name
+                # Persist it so future loads don't need AdGuard
+                database.set_device_name(d["mac"], agh_name)
     return {"devices": devices}
 
 
@@ -394,6 +478,19 @@ def set_quota_action(mac: str, body: QuotaActionRequest, user: dict = Depends(_r
         raise HTTPException(400, "throttle_rate_kbps is required when action is 'throttle'")
     database.set_quota_action(mac, body.action, body.throttle_rate_kbps)
     return {"ok": True}
+
+
+class ForceBlockRequest(BaseModel):
+    blocked: bool
+
+
+@app.post("/api/devices/{mac}/force_block")
+def force_block(mac: str, body: ForceBlockRequest, user: dict = Depends(_require_admin)):
+    """Directly set or clear the force_blocked flag on a device.
+    When True, the device is blocked regardless of quota or schedule settings.
+    Cleared automatically by the emergency unblock action."""
+    database.set_force_blocked(mac, body.blocked)
+    return {"ok": True, "force_blocked": body.blocked}
 
 
 @app.post("/api/devices/{mac}/schedule_rules")
